@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Tasks"
+  short_description: "Manage repository-local ticket work"
+  default_prompt: "Use $ticket-tasks to find and manage actionable ticket work in this repository."

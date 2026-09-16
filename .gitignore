@@ -1,0 +1,10 @@
+# Build artifacts (local host binary + cross-compiled release targets)
+/ticket
+/ticket.exe
+/bin/
+/dist/
+
+# Test and temporary data
+*.test
+*.project
+*.settings

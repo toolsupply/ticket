@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: package (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build and package
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${RELEASE_VERSION#v}"
+          mkdir -p release
+          binary=ticket
+          if [ "$GOOS" = windows ]; then binary=ticket.exe; fi
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X ticket/internal/cli.Version=$version -X ticket/internal/cli.Commit=$GITHUB_SHA" \
+            -o "$binary" ./cmd/ticket
+          archive="ticket-$GOOS-$GOARCH"
+          if [ "${{ matrix.archive }}" = zip ]; then
+            zip -q "release/$archive.zip" "$binary"
+          else
+            tar -czf "release/$archive.tar.gz" "$binary"
+          fi
+      - name: attest release archive
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: release-*
+          merge-multiple: true
+      - name: checksums
+        working-directory: release
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+      - name: create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
