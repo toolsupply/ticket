@@ -19,12 +19,11 @@ Getting started:
   init       Initialize ./tickets (or TICKET_ROOT)
   create     Create a ticket
 
-Finding work:
+  Finding work:
   list       List tickets
   grep       Find tickets by text or regular expression
-  ready      Show ready work
-  next       Select the next ready ticket
-  wait       Wait for ready work
+  next       Select the next eligible ticket
+  wait       Wait for eligible work
   show       Show a ticket
   status     Show concise ticket status
 
@@ -34,6 +33,7 @@ Working on tickets:
   update     Update a ticket
   bump       Raise a ticket's priority
   release    Release ownership
+  actor      Show the effective actor identity
 
 Lifecycle:
   open       Make a ticket active
@@ -48,7 +48,6 @@ Review:
 
 Maintenance:
   delete     Permanently delete tickets
-  upgrade    Update the Linux ticket executable
   check      Validate the repository
 
 Run 'ticket help <command>' or 'ticket <command> -h' for command-specific help.
@@ -57,7 +56,7 @@ Run 'ticket help <command>' or 'ticket <command> -h' for command-specific help.
 
 func globalHelpOptions() []contract.Flag {
 	return []contract.Flag{
-		{Name: "--actor", Kind: "token", Description: "Actor for mutations; overrides TICKET_ACTOR."},
+		{Name: "--actor", Kind: "token", Description: "Actor identity override; takes precedence over TICKET_ACTOR."},
 		{Name: "-j, --json", Kind: "bool", Description: "Use compact JSON output for success and errors."},
 		{Name: "-h, --help", Kind: "bool", Description: "Show help for this command."},
 	}
@@ -94,7 +93,7 @@ func helpPayload(name string) (map[string]any, *contract.Command, bool) {
 
 func commandHasNoActor(name string) bool {
 	switch name {
-	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "check", "version", "upgrade", "help":
+	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "check", "version", "actor", "help":
 		return true
 	default:
 		return false
@@ -143,6 +142,7 @@ func commandUsage(name string) string {
 		"next":    "[open|review]",
 		"wait":    "[open|review]",
 		"show":    "[ID]",
+		"actor":   "",
 		"edit":    "[ID]",
 		"submit":  "[ID]",
 		"hold":    "[ID]",
@@ -156,7 +156,6 @@ func commandUsage(name string) string {
 		"approve": "[ID...|review|all]",
 		"reject":  "[ID] [OUTCOME]",
 		"help":    "[COMMAND]",
-		"upgrade": "",
 	}
 	usage := "ticket " + name + " [options]"
 	if operand := operands[name]; operand != "" {
@@ -192,6 +191,9 @@ func emitTopLevelHelp(ctx *commandContext) error {
 	if ctx.json {
 		commands := make([]map[string]string, 0, len(contract.Commands))
 		for _, command := range contract.Commands {
+			if command.Name == "ready" {
+				continue
+			}
 			commands = append(commands, map[string]string{"name": command.Name, "summary": command.Summary})
 		}
 		return emitJSON(ctx.stdout, map[string]any{"commands": commands})

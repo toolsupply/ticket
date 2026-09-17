@@ -25,8 +25,9 @@ const (
 	StorageVersion = contract.StorageVersion
 )
 
-// Version is the build version reported by the version command.
-var Version = "0.1.0"
+// Version is the build version reported by the version command. Release and
+// Makefile builds replace the development value from the root VERSION file.
+var Version = "dev"
 
 // Commit is the optional build commit, settable at link time via
 // -ldflags "-X ticket/internal/cli.Commit=<sha>".
@@ -172,8 +173,8 @@ func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 		return cmdList(ctx, append([]string{"-l", "-a"}, rest...), true)
 	case "version":
 		return cmdVersion(ctx, rest)
-	case "upgrade":
-		return cmdUpgrade(ctx, rest)
+	case "actor":
+		return cmdActor(ctx, rest)
 	case "init":
 		return cmdInit(ctx, rest)
 	case "create":

@@ -8,6 +8,7 @@ import (
 func TestWorkflowMessageCLIAppendsWorkLog(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	t.Setenv("TICKET_ACTOR", "human")
 	if out, code := runCLI(t, "init"); code != 0 {
 		t.Fatalf("init: exit=%d out=%q", code, out)
 	}

@@ -12,18 +12,24 @@ PKG   := ./cmd/ticket
 BIN   := bin
 DIST  := dist
 LDFLAGS ?= -s -w
+VERSION := $(strip $(shell cat VERSION 2>/dev/null))
+SKILL := skills/ticket-tasks
 # "GOOS/GOARCH" release targets (cross-compile with CGO disabled).
 # Windows arm64 is intentionally left out of the first release matrix; it can
 # be added without changing the packaging layout when there is demand for it.
 TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 ARCHIVES := $(DIST)/release
 
+ifeq ($(VERSION),)
+$(error VERSION must contain a release version)
+endif
+
 .PHONY: build dist archives release test race vet fmt clean
 
 # Host binary for THIS machine -> bin/ticket (matches the Linux dev host).
 build:
 	@mkdir -p $(BIN)
-	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/ticket $(PKG)
+	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS) -X ticket/internal/cli.Version=$(VERSION)" -o $(BIN)/ticket $(PKG)
 
 # All release targets -> dist/ticket-<os>-<arch>[.exe].
 dist:
@@ -33,7 +39,7 @@ dist:
 		out=$(DIST)/ticket-$${os}-$${arch}; \
 		case $$os in windows) out=$${out}.exe;; esac; \
 		echo "build $$os/$$arch -> $$out"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "$(LDFLAGS)" -o "$$out" $(PKG) || exit 1; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "$(LDFLAGS) -X ticket/internal/cli.Version=$(VERSION)" -o "$$out" $(PKG) || exit 1; \
 	done
 
 # Package dist binaries in the same shape used by GitHub releases. Each
@@ -56,6 +62,7 @@ archives: dist
 				rm -rf "$$stage";; \
 		esac || exit 1; \
 	done
+	@stage="$(ARCHIVES)/.stage-ticket-tasks"; mkdir -p "$$stage"; cp -R "$(SKILL)/." "$$stage/ticket-tasks"; (cd "$$stage" && zip -q -r ../ticket-tasks.zip ticket-tasks); rm -rf "$$stage"
 	@cd $(ARCHIVES) && sha256sum *.tar.gz *.zip > SHA256SUMS
 
 release: archives

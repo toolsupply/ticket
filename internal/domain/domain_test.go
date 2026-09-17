@@ -469,6 +469,19 @@ func TestShowContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if v.AttachmentPath != "" {
+		t.Fatalf("unexpected attachment path without directory: %q", v.AttachmentPath)
+	}
+	if err := os.Mkdir(filepath.Join(e.base, "tickets", id, "attachments"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withAttachments, err := Show(e.st, id, ShowOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withAttachments.AttachmentPath != filepath.Join(e.st.Root, id, "attachments") {
+		t.Fatalf("attachment path=%q want %q", withAttachments.AttachmentPath, filepath.Join(e.st.Root, id, "attachments"))
+	}
 	for _, key := range []string{"objective", "acceptance", "handoff"} {
 		if _, ok := v.Sections[key]; !ok {
 			t.Fatalf("default sections missing %s: %v", key, v.Sections)

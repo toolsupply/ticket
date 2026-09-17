@@ -236,6 +236,29 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 	if !strings.Contains(topLevelHelp[maintenance:], "  check      Validate the repository\n") {
 		t.Fatalf("check is not in maintenance: %q", topLevelHelp)
 	}
+	if strings.Contains(topLevelHelp, "\n  ready ") {
+		t.Fatalf("ready should be hidden from top-level help: %q", topLevelHelp)
+	}
+	out, code := runCLI(t, "help")
+	if code != 0 {
+		t.Fatalf("JSON top-level help: exit=%d out=%q", code, out)
+	}
+	var summary struct {
+		Commands []struct {
+			Name string `json:"name"`
+		} `json:"commands"`
+	}
+	if m := exactlyOneJSONObject(t, out); m["commands"] == nil {
+		t.Fatalf("JSON top-level help has no commands: %v", m)
+	}
+	if err := json.Unmarshal([]byte(out), &summary); err != nil {
+		t.Fatalf("JSON top-level help: %v", err)
+	}
+	for _, command := range summary.Commands {
+		if command.Name == "ready" {
+			t.Fatal("ready should be hidden from JSON top-level help")
+		}
+	}
 }
 
 func TestHelp(t *testing.T) {
@@ -253,6 +276,16 @@ func TestHelp(t *testing.T) {
 	}
 	if out, code := runCLI(t, "help", "grep"); code != 0 || !strings.Contains(out, "grep") {
 		t.Fatalf("grep help: exit=%d out=%q", code, out)
+	}
+	for _, args := range [][]string{{"help", "ready"}, {"ready", "-h"}, {"ready", "--help"}} {
+		out, code := runCLIHuman(t, args...)
+		if code != 0 || !strings.Contains(out, "ready - List actionable unassigned tickets.") {
+			t.Fatalf("ready help: args=%v exit=%d out=%q", args, code, out)
+		}
+		jsonOut, jsonCode := runCLI(t, args...)
+		if jsonCode != 0 || exactlyOneJSONObject(t, jsonOut)["command"] != "ready" {
+			t.Fatalf("JSON ready help: args=%v exit=%d out=%q", args, jsonCode, jsonOut)
+		}
 	}
 	out, code := runCLIHuman(t, "help", "delete")
 	if code != 0 || !strings.Contains(out, "delete - Permanently delete tickets.") || strings.Contains(strings.ToLower(out), "folder") || strings.Contains(out, "--actor") {
@@ -276,8 +309,8 @@ func TestHelp(t *testing.T) {
 func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 	for _, command := range []string{
 		"create", "delete", "bump", "list", "grep", "show", "edit", "submit",
-		"hold", "open", "status", "path", "update", "claim", "release",
-		"close", "approve", "reject", "upgrade", "help",
+		"hold", "open", "status", "path", "update", "claim", "release", "actor",
+		"close", "approve", "reject", "help",
 	} {
 		out, code := runCLIHuman(t, "help", command)
 		if code != 0 {
@@ -302,6 +335,7 @@ func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 		"update":  "ticket update [options] [ID]",
 		"claim":   "ticket claim [options] [ID]",
 		"release": "ticket release [options] [ID]",
+		"actor":   "ticket actor [options]",
 		"submit":  "ticket submit [options] [ID]",
 		"hold":    "ticket hold [options] [ID]",
 		"open":    "ticket open [options] [ID] [HANDOFF]",
@@ -317,7 +351,7 @@ func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 }
 
 func TestCommandHelpKeepsUniversalFlagsTogetherAtEnd(t *testing.T) {
-	for _, command := range []string{"create", "edit", "grep", "check", "upgrade"} {
+	for _, command := range []string{"create", "edit", "grep", "check", "actor"} {
 		out, code := runCLIHuman(t, "help", command)
 		if code != 0 {
 			t.Fatalf("%s help: exit=%d out=%q", command, code, out)
@@ -332,6 +366,13 @@ func TestCommandHelpKeepsUniversalFlagsTogetherAtEnd(t *testing.T) {
 			!strings.Contains(lines[len(lines)-1], "-h, --help") {
 			t.Fatalf("%s help does not end options with -j and -h: %q", command, section)
 		}
+	}
+}
+
+func TestActorHelpDescribesIdentityDiscovery(t *testing.T) {
+	out, code := runCLI(t, "help", "actor")
+	if code != 0 || strings.Contains(out, "--actor") || !strings.Contains(out, "Show the effective actor identity.") {
+		t.Fatalf("actor help: exit=%d out=%q", code, out)
 	}
 }
 
@@ -664,6 +705,7 @@ func TestCreateAndNewReadObjectiveFromTrailingDash(t *testing.T) {
 func TestNextSelectsAndOptionallyClaimsReadyWork(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	t.Setenv("TICKET_ACTOR", "")
 	if out, code := runCLI(t, "init"); code != 0 {
 		t.Fatalf("init: exit=%d out=%q", code, out)
 	}
@@ -1448,6 +1490,97 @@ func TestEndToEnd(t *testing.T) {
 	if m["id"] != id {
 		t.Fatalf("show: %v", m)
 	}
+	if _, ok := m["attachment_path"]; ok {
+		t.Fatalf("show advertised absent attachments: %v", m)
+	}
+	attachments := filepath.Join(dir, "tickets", id, "attachments")
+	if err := os.Mkdir(attachments, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runCLI(t, "show", id)
+	if code != 0 {
+		t.Fatalf("show with attachments: %q (exit %d)", out, code)
+	}
+	m = exactlyOneJSONObject(t, out)
+	wantAttachmentPath := filepath.ToSlash(filepath.Join("tickets", id, "attachments"))
+	if m["attachment_path"] != wantAttachmentPath {
+		t.Fatalf("attachment path=%v want %q", m["attachment_path"], wantAttachmentPath)
+	}
+	// A symlinked attachments entry is exposed lexically; the harness owns
+	// the policy for following its target.
+	linkedTarget := filepath.Join(dir, "tickets", id, "real-attachments")
+	if err := os.Mkdir(linkedTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(attachments); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linkedTarget, attachments); err == nil {
+		out, code = runCLI(t, "show", id)
+		if code != 0 {
+			t.Fatalf("show with linked attachments: %q (exit %d)", out, code)
+		}
+		m = exactlyOneJSONObject(t, out)
+		wantLinkedPath := filepath.ToSlash(filepath.Join("tickets", id, "attachments"))
+		if m["attachment_path"] != wantLinkedPath {
+			t.Fatalf("linked attachment path=%v want %q", m["attachment_path"], wantLinkedPath)
+		}
+		outsideTarget := filepath.Join(t.TempDir(), "outside-attachments")
+		if err := os.Mkdir(outsideTarget, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(attachments); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsideTarget, attachments); err != nil {
+			t.Fatalf("outside symlink setup: %v", err)
+		}
+		out, code = runCLI(t, "show", id)
+		if code != 0 {
+			t.Fatalf("show with external linked attachments: %q (exit %d)", out, code)
+		}
+		m = exactlyOneJSONObject(t, out)
+		if m["attachment_path"] != wantLinkedPath {
+			t.Fatalf("external linked attachment path=%v want %q", m["attachment_path"], wantLinkedPath)
+		}
+	} else if err := os.Mkdir(attachments, 0o755); err != nil {
+		t.Logf("symlink test skipped: %v", err)
+	}
+	nested := filepath.Join(dir, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
+	out, code = runCLI(t, "show", id)
+	if code != 0 {
+		t.Fatalf("nested show with attachments: %q (exit %d)", out, code)
+	}
+	m = exactlyOneJSONObject(t, out)
+	if _, ok := m["attachment_path"]; ok {
+		t.Fatalf("nested invocation exposed attachment path outside cwd: %v", m)
+	}
+	t.Chdir(dir)
+	// An explicitly configured ticket root outside the working directory is
+	// not exposed as an attachment path that the harness cannot safely reach.
+	externalRoot := filepath.Join(t.TempDir(), "tickets")
+	t.Setenv("TICKET_ROOT", externalRoot)
+	if out, code = runCLI(t, "init"); code != 0 {
+		t.Fatalf("external init: exit=%d out=%q", code, out)
+	}
+	external := exactlyOneJSONObject(t, mustCLI(t, "create", "External root"))
+	externalID := external["id"].(string)
+	if err := os.Mkdir(filepath.Join(externalRoot, externalID, "attachments"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runCLI(t, "show", externalID)
+	if code != 0 {
+		t.Fatalf("external show: exit=%d out=%q", code, out)
+	}
+	m = exactlyOneJSONObject(t, out)
+	if _, ok := m["attachment_path"]; ok {
+		t.Fatalf("external root exposed attachment path: %v", m)
+	}
+	t.Setenv("TICKET_ROOT", "")
 	// path.
 	out, code = runCLI(t, "path", id)
 	if code != 0 {

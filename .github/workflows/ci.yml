@@ -80,7 +80,8 @@ jobs:
       - name: cross-build
         shell: bash
         run: |
+          version="$(tr -d '\r\n' < VERSION)"
           out=ticket
           if [ "$GOOS" = windows ]; then out=ticket.exe; fi
           CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
-            go build -trimpath -ldflags '-s -w' -o "$out" ./cmd/ticket
+            go build -trimpath -ldflags "-s -w -X ticket/internal/cli.Version=$version" -o "$out" ./cmd/ticket

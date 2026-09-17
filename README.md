@@ -39,11 +39,7 @@ Alternatively install for all users:
 curl -fsSL "https://github.com/toolsupply/ticket/releases/latest/download/ticket-linux-amd64.tar.gz" | tar -xz -O ticket | sudo install -m 0755 /dev/stdin /usr/local/bin/ticket
 ```
 
-After installation, Linux `amd64` and `arm64` binaries can update themselves from the official GitHub Release source:
-
-```sh
-ticket upgrade
-```
+To update the binary, rerun the installation command for your platform.
 
 ### Manual installation
 
@@ -51,11 +47,11 @@ Releases contain one archive per supported platform:
 
 | Platform | Archive |
 | --- | --- |
-| Linux x86-64 | `ticket-linux-amd64.tar.gz` |
-| Linux ARM64 | `ticket-linux-arm64.tar.gz` |
-| macOS Intel | `ticket-darwin-amd64.tar.gz` |
-| macOS Apple Silicon | `ticket-darwin-arm64.tar.gz` |
-| Windows x86-64 | `ticket-windows-amd64.zip` |
+| Linux x86-64 | [ticket-linux-amd64.tar.gz](https://github.com/toolsupply/ticket/releases/latest/download/ticket-linux-amd64.tar.gz) |
+| Linux ARM64 | [ticket-linux-arm64.tar.gz](https://github.com/toolsupply/ticket/releases/latest/download/ticket-linux-arm64.tar.gz) |
+| macOS Intel | [ticket-darwin-amd64.tar.gz](https://github.com/toolsupply/ticket/releases/latest/download/ticket-darwin-amd64.tar.gz) |
+| macOS Apple Silicon | [ticket-darwin-arm64.tar.gz](https://github.com/toolsupply/ticket/releases/latest/download/ticket-darwin-arm64.tar.gz) |
+| Windows x86-64 | [ticket-windows-amd64.zip](https://github.com/toolsupply/ticket/releases/latest/download/ticket-windows-amd64.zip) |
 
 Download `SHA256SUMS` with the archive and verify the checksum before
 extracting it. Each archive contains only the executable: `ticket` on Unix
@@ -78,7 +74,7 @@ compatible Agent Skills clients. In Codex, install it directly from GitHub:
 $skill-installer install https://github.com/toolsupply/ticket/tree/main/skills/ticket-tasks
 ```
 
-The installer places the skill under `$CODEX_HOME/skills/ticket-tasks`, defaulting to `~/.codex/skills/ticket-tasks`.
+For other harnesses, download [ticket-tasks.zip](https://github.com/toolsupply/ticket/releases/latest/download/ticket-tasks.zip) and extract the `ticket-tasks` directory into the harness's skill directory.
 
 Manual installation - adapt for your harness of choice:
 
@@ -133,12 +129,12 @@ After review and signoff:
 ticket close
 ```
 
-The submit and review lifecycle states are optional, tickets can be closed or rejected from any state.
+The submit and review lifecycle states are optional; tickets can be closed or rejected from any state.
 
 ## How it works
 
 `ticket` uses the local filesystem as its database. Tickets are Markdown files that can live directly alongside the source code they describe.
-Concurrent access and atomic operations are managed one local lock for the ticket root.
+Concurrent access and atomic operations are managed by one local lock for the ticket root.
 
 The CLI manages ticket state, ownership, dependencies, parent/child relationships, work selection, and optional source-control synchronization.
 
@@ -146,7 +142,14 @@ The CLI manages ticket state, ownership, dependencies, parent/child relationship
 
 Tickets can depend on other tickets and can be grouped under parent work.
 
-The CLI takes these relationships into account when determining which work is actionable. Agents and scripts therefore do not need to independently reason about whether dependencies or child work currently block a ticket.
+The CLI takes the relationship graph into account when determining which work is actionable. Agents and scripts therefore do not need to independently reason about whether dependencies or child work currently block a ticket.
+
+### Ticket attachments
+
+Supplementary material can be stored under a ticket's `attachments/`
+directory. The ticket manager leaves those files opaque; humans and agents
+can use their normal filesystem tools to organize, read, and update them.
+`TASK.md` remains the ticket manager's authoritative file.
 
 ### Ticket lifecycle
 
@@ -187,14 +190,6 @@ For example, configure an editor that waits for completion:
 export TICKET_EDITOR="code --wait"
 ```
 
-## Prettifying
-
-Specifying a decorator makes ticket commands output Markdown and renders via the specified decorator. Try this for a pink experience:
-
-```sh
-export TICKET_DECORATOR="glow -w 0 -s pink"
-```
-
 ## Monitoring work
 
 Live monitoring is work in progress. Shell tools can for now be used to monitor work:
@@ -207,31 +202,24 @@ Ticket state remains available independently of any particular agent session, so
 
 ## Selecting work
 
-`ticket` distinguishes between all open work and work that is currently ready to be acted on.
-
-```sh
-ticket ready
-```
-
-shows ready work.
+Select the next ticket available for implementation:
 
 ```sh
 ticket next
 ```
 
-selects the next ready ticket.
-
-To select and claim it in one operation:
+To select and claim the next ticket:
 
 ```sh
 ticket next --claim
 ```
 
-This only selects open, unassigned work whose dependencies and child work no longer block it.
+Implementation selection considers current actor, ticket state, ownership, dependencies, child
+work, and any supplied filters such as tags. Blocked or otherwise ineligible
+tickets are skipped.
 
-
-Reviewers use the explicit review queue. Review work does not use implementation
-readiness blockers:
+Reviewers use the explicit review queue. Review selection does not use
+implementation dependency or child-work blockers:
 
 ```sh
 ticket next review --claim
@@ -431,19 +419,15 @@ In this configuration, Git synchronization performed by `ticket` advances the sa
 Toolchain: Go `1.24.4`. No CGO or third-party Go dependencies are required.
 
 ```sh
-go build -ldflags "-s -w" -o ticket ./cmd/ticket
-./ticket version
+make build
+./bin/ticket version
 ```
 
 Build with a commit stamp:
 
 ```sh
-go build \
-    -ldflags "-s -w -X ticket/internal/cli.Commit=$(git rev-parse HEAD)" \
-    -o ticket ./cmd/ticket
+make LDFLAGS="-s -w -X ticket/internal/cli.Commit=$(git rev-parse HEAD)" build
 ```
-
-The Makefile also provides local build, test, race, vet, and cross-build commands.
 
 ## Tests
 

@@ -31,13 +31,3 @@ func TestOpenAndRejectUseCurrentTicketWithPositionalText(t *testing.T) {
 		t.Fatalf("rejected ticket: %v", rejected)
 	}
 }
-
-func TestUpgradeDoesNotAcceptActor(t *testing.T) {
-	if out, code := runCLI(t, "upgrade", "--actor", "codex"); code == 0 || errCode(t, out) != "invalid_argument" {
-		t.Fatalf("upgrade actor flag: exit=%d output=%q", code, out)
-	}
-	out, code := runCLIHuman(t, "help", "upgrade")
-	if code != 0 || strings.Contains(out, "--actor") {
-		t.Fatalf("upgrade help actor option: exit=%d output=%q", code, out)
-	}
-}

@@ -3,6 +3,7 @@
 package domain
 
 import (
+	"os"
 	"path/filepath"
 	"time"
 
@@ -49,7 +50,9 @@ type Prerequisite struct {
 // ShowView is the show response.
 type ShowView struct {
 	ID                string                 `json:"id"`
+	TicketRoot        string                 `json:"-"`
 	Path              string                 `json:"path"`
+	AttachmentPath    string                 `json:"attachment_path,omitempty"`
 	Title             string                 `json:"title"`
 	State             string                 `json:"state"`
 	Priority          int                    `json:"priority"`
@@ -182,10 +185,11 @@ func resolveShowID(st *store.Store, ref string) (string, error) {
 
 func buildShow(st *store.Store, t *Ticket, opts ShowOptions, full bool) (*ShowView, error) {
 	v := &ShowView{
-		ID: t.ID, Path: t.TaskRelPath,
+		ID: t.ID, TicketRoot: st.Root, Path: t.TaskRelPath,
 		Title: t.Title, State: t.State, Priority: t.Priority,
 		Tags: t.Tags, DependsOn: t.DependsOn,
 	}
+	v.AttachmentPath = attachmentPath(st, t.ID)
 	if t.Tags == nil {
 		v.Tags = []string{}
 	}
@@ -271,6 +275,18 @@ func buildShow(st *store.Store, t *Ticket, opts ShowOptions, full bool) (*ShowVi
 		v.Readiness = readiness
 	}
 	return v, nil
+}
+
+// attachmentPath returns the attachments directory entry when a ticket has
+// one. Lstat deliberately does not inspect symlink targets; the harness owns
+// the policy for following them.
+func attachmentPath(st *store.Store, id string) string {
+	path := filepath.Join(st.Root, id, "attachments")
+	info, err := os.Lstat(path)
+	if err == nil && (info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return path
+	}
+	return ""
 }
 
 func buildPrerequisites(st *store.Store, t *Ticket) ([]Prerequisite, bool, error) {

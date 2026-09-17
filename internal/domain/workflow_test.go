@@ -150,6 +150,81 @@ func TestWorkLogAppendUsesCanonicalHeadingAndNormalizesEOF(t *testing.T) {
 	}
 }
 
+func TestWorkLogAppendBeforeLaterSections(t *testing.T) {
+	e := newEnv(t, 9605)
+	id := e.create(t, "non-final work log", CreateOptions{Sections: map[string]string{"objective": "Do the work."}})
+	data := []byte("---\nstate: open\npriority: 2\n---\n# non-final work log\n\n## Objective\n\nDo the work.\n\n## Handoff\n\nOld handoff.\n\n## Work log\n\n- old entry\n\n## Outcome\n\nExisting outcome text.\n\n## Notes\n\nKeep this custom section.\n")
+	if _, err := e.st.ReplaceTask(id, data, TaskMaxBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Submit(e.st, id, SubmitOptions{Handoff: stringPtr("New handoff."), Message: stringPtr("new entry")}); err != nil {
+		t.Fatalf("append non-final Work log: %v", err)
+	}
+	ticket, err := ReadTicket(e.st, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(ticket.FileBytes)
+	work := strings.Index(body, "## Work log")
+	outcome := strings.Index(body, "## Outcome")
+	notes := strings.Index(body, "## Notes")
+	entry := strings.Index(body, "new entry")
+	if work < 0 || outcome < 0 || notes < 0 || entry <= work || entry >= outcome {
+		t.Fatalf("new entry was not inserted into Work log: %q", body)
+	}
+	if strings.Count(body, "new entry") != 1 || !strings.Contains(body, "New handoff.") || strings.Contains(body, "Old handoff.") || !strings.Contains(body, "Existing outcome text.") || !strings.Contains(body, "Keep this custom section.") {
+		t.Fatalf("later content was changed or entry duplicated: %q", body)
+	}
+}
+
+func TestWorkLogAppendRejectsDuplicateAndStructuralMessages(t *testing.T) {
+	e := newEnv(t, 9606)
+	id := e.create(t, "ambiguous work log", CreateOptions{Sections: map[string]string{"objective": "Do the work."}})
+	data := []byte("---\nstate: open\npriority: 2\n---\n# ambiguous work log\n\n## Work log\n\n- first\n\n## Outcome\n\nold\n\n## Work log\n\n- second\n")
+	if _, err := e.st.ReplaceTask(id, data, TaskMaxBytes); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), data...)
+	if _, err := Submit(e.st, id, SubmitOptions{Message: stringPtr("new entry")}); err == nil || contractCode(t, err) != contract.ErrInvalidTicket {
+		t.Fatalf("duplicate Work log accepted: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(e.st.Root, id, "TASK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("duplicate Work log mutation changed bytes")
+	}
+
+	clean := e.create(t, "message validation", CreateOptions{Sections: map[string]string{"objective": "Do the work."}})
+	original, err := os.ReadFile(filepath.Join(e.st.Root, clean, "TASK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"# injected", "## Outcome", "first line\nsecond line"} {
+		if _, err := Submit(e.st, clean, SubmitOptions{Message: stringPtr(message)}); err == nil || contractCode(t, err) != contract.ErrInvalidArgument {
+			t.Fatalf("unsafe message %q accepted: %v", message, err)
+		}
+		current, readErr := os.ReadFile(filepath.Join(e.st.Root, clean, "TASK.md"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(current) != string(original) {
+			t.Fatalf("unsafe message %q changed bytes", message)
+		}
+	}
+	if _, err := Update(e.st, clean, UpdateOptions{Sections: map[string]string{"objective": "safe\n## Work log"}}); err == nil || contractCode(t, err) != contract.ErrInvalidArgument {
+		t.Fatalf("structured Work log heading was accepted: %v", err)
+	}
+	current, err := os.ReadFile(filepath.Join(e.st.Root, clean, "TASK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != string(original) {
+		t.Fatal("structured Work log heading changed ticket bytes")
+	}
+}
+
 func TestReviewAndListStates(t *testing.T) {
 	e := newEnv(t, 9602)
 	id := workflowTicket(t, e, "review")

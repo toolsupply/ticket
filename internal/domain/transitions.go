@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ticket/internal/contract"
+	"ticket/internal/markdown"
 	"ticket/internal/store"
 )
 
@@ -326,7 +327,11 @@ func moveAssignedAny(st *store.Store, id, actor string, handoff, message *string
 
 func transitionBody(t *Ticket, sections map[string]string, message *string, actor string) ([]byte, error) {
 	if message != nil {
-		log, err := workLogContent(t, *message, actor)
+		workLog, err := uniqueWorkLogSection(t)
+		if err != nil {
+			return nil, err
+		}
+		log, err := workLogContent(t, workLog, *message, actor)
 		if err != nil {
 			return nil, err
 		}
@@ -338,10 +343,38 @@ func transitionBody(t *Ticket, sections map[string]string, message *string, acto
 	return applyBodyChanges(t, UpdateOptions{Sections: sections, allowWorkLog: true}, map[string]bool{})
 }
 
-func workLogContent(t *Ticket, message, actor string) (string, error) {
-	message = strings.TrimSpace(strings.ReplaceAll(message, "\r\n", "\n"))
+// uniqueWorkLogSection returns the parsed Work log range. The ordinary ticket
+// parser keeps the first duplicate section for compatibility, but a mutation
+// that appends history must reject an ambiguous document.
+func uniqueWorkLogSection(t *Ticket) (*markdown.Section, error) {
+	parsed := markdown.ParseBody(t.Body)
+	var found *markdown.Section
+	for _, section := range parsed.Sections {
+		if section.Key != "work_log" {
+			continue
+		}
+		if found != nil {
+			return nil, contract.NewError(contract.ErrInvalidTicket,
+				"Ticket contains multiple Work log sections.", nil)
+		}
+		copy := section
+		found = &copy
+	}
+	return found, nil
+}
+
+func workLogContent(t *Ticket, section *markdown.Section, message, actor string) (string, error) {
+	if strings.ContainsAny(message, "\r\n") {
+		return "", contract.NewError(contract.ErrInvalidArgument,
+			"Message must be a single line.", nil)
+	}
+	message = strings.TrimSpace(message)
 	if message == "" {
 		return "", contract.NewError(contract.ErrInvalidArgument, "Message must not be empty.", nil)
+	}
+	if markdown.ContainsTopLevelHeading(message) {
+		return "", contract.NewError(contract.ErrInvalidArgument,
+			"Message must not contain an H1 or H2 heading.", nil)
 	}
 	actor = strings.TrimSpace(actor)
 	if actor == "" {
@@ -350,13 +383,12 @@ func workLogContent(t *Ticket, message, actor string) (string, error) {
 	if err := validateActor(actor); err != nil {
 		return "", err
 	}
-	lines := strings.Split(message, "\n")
 	var entry strings.Builder
-	fmt.Fprintf(&entry, "- %s %s: %s\n", time.Now().UTC().Format(time.RFC3339), actor, strings.TrimSpace(lines[0]))
-	for _, line := range lines[1:] {
-		fmt.Fprintf(&entry, "    %s\n", strings.TrimRight(line, "\r"))
+	fmt.Fprintf(&entry, "- %s %s: %s\n", time.Now().UTC().Format(time.RFC3339), actor, message)
+	existing := ""
+	if section != nil {
+		existing = strings.TrimRight(section.DisplayContent(t.Body), "\r\n")
 	}
-	existing := strings.TrimRight(t.SectionText("work_log"), "\r\n")
 	if existing != "" {
 		existing += "\n"
 	}

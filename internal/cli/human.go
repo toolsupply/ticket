@@ -91,6 +91,9 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 	case *domain.ShowView:
 		fmt.Fprintf(stdout, "%s %s\n\n", r.ID, r.Title)
 		fmt.Fprintf(stdout, "state:      %s\npriority:   P%d\n", r.State, r.Priority)
+		if r.AttachmentPath != "" {
+			fmt.Fprintf(stdout, "attachment_path: %s\n", r.AttachmentPath)
+		}
 		if r.Assignee != "" {
 			fmt.Fprintf(stdout, "assignee:   %s\n", r.Assignee)
 		}
@@ -296,6 +299,9 @@ func renderMarkdownTo(stdout *bytes.Buffer, cmd string, res any) error {
 			}
 		}
 	case *domain.ShowView:
+		if r.AttachmentPath != "" {
+			fmt.Fprintf(stdout, "Attachment path: `%s`\n\n", markdownCell(r.AttachmentPath))
+		}
 		if r.Body != "" {
 			fmt.Fprint(stdout, r.Body)
 			if !strings.HasSuffix(r.Body, "\n") {

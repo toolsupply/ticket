@@ -45,15 +45,22 @@ func (g *globalOpts) openStore(cwd string) (*store.Store, error) {
 }
 
 func (g *globalOpts) actorToken() (string, error) {
-	a := g.actor
-	if a == "" {
-		a = os.Getenv("TICKET_ACTOR")
-	}
+	a, _ := g.effectiveActor()
 	if a == "" {
 		return "", contract.NewError(contract.ErrMissingActor,
 			"An actor is required; set --actor or TICKET_ACTOR.", nil)
 	}
 	return a, nil
+}
+
+func (g *globalOpts) effectiveActor() (actor, source string) {
+	if g.actor != "" {
+		return g.actor, "--actor"
+	}
+	if actor := os.Getenv("TICKET_ACTOR"); actor != "" {
+		return actor, "TICKET_ACTOR"
+	}
+	return "", ""
 }
 
 // commandContext carries the invocation through one command.
@@ -92,11 +99,52 @@ func runRepoCommandMode(ctx *commandContext, cmd string, mutation bool, fn func(
 			return contract.NewError(contract.ErrIOError, "Cannot signal ticket change: "+err.Error(), nil)
 		}
 	}
+	normalizeShowPaths(ctx, res)
 	rememberCurrentTicket(st, res)
 	if !ctx.json {
 		return renderHumanTo(stdout, cmd, res, ctx.markdown)
 	}
 	return emitSuccess(stdout, res)
+}
+
+// normalizeShowPaths makes filesystem paths in show output usable by the
+// harness from its current working directory. The containment check is
+// lexical; symlink handling remains the responsibility of the harness.
+func normalizeShowPaths(ctx *commandContext, res any) {
+	view, ok := res.(*domain.ShowView)
+	if !ok || view.AttachmentPath == "" {
+		return
+	}
+	cwd, err := filepath.Abs(ctx.cwd)
+	if err != nil {
+		view.AttachmentPath = ""
+		return
+	}
+	root, err := filepath.Abs(view.TicketRoot)
+	if err != nil {
+		view.AttachmentPath = ""
+		return
+	}
+	rootRel, err := filepath.Rel(cwd, root)
+	if err != nil || !relativePathWithinRoot(rootRel) {
+		view.AttachmentPath = ""
+		return
+	}
+	attachment, err := filepath.Abs(view.AttachmentPath)
+	if err != nil {
+		view.AttachmentPath = ""
+		return
+	}
+	attachmentRel, err := filepath.Rel(cwd, attachment)
+	if err != nil || !relativePathWithinRoot(attachmentRel) {
+		view.AttachmentPath = ""
+		return
+	}
+	view.AttachmentPath = filepath.ToSlash(attachmentRel)
+}
+
+func relativePathWithinRoot(rel string) bool {
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func openSynchronizedStore(g *globalOpts, cwd string) (*store.Store, scm.Backend, error) {

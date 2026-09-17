@@ -43,10 +43,11 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          RELEASE_VERSION: ${{ github.ref_name }}
         run: |
           set -eu
-          version="${RELEASE_VERSION#v}"
+          version="$(tr -d '\r\n' < VERSION)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$version" = "$tag_version"
           mkdir -p release
           binary=ticket
           if [ "$GOOS" = windows ]; then binary=ticket.exe; fi
@@ -60,7 +61,7 @@ jobs:
             tar -czf "release/$archive.tar.gz" "$binary"
           fi
       - name: attest release archive
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest@v4
         with:
           subject-path: release/*
       - uses: actions/upload-artifact@v4
@@ -69,9 +70,32 @@ jobs:
           path: release/*
           if-no-files-found: error
 
+  skill:
+    name: package ticket-tasks skill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: package skill
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p release/stage/ticket-tasks
+          cp -R skills/ticket-tasks/. release/stage/ticket-tasks/
+          (cd release/stage && zip -q -r ../ticket-tasks.zip ticket-tasks)
+          rm -rf release/stage
+      - name: attest skill archive
+        uses: actions/attest@v4
+        with:
+          subject-path: release/ticket-tasks.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-skill
+          path: release/ticket-tasks.zip
+          if-no-files-found: error
+
   publish:
     name: publish release
-    needs: build
+    needs: [build, skill]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
