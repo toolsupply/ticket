@@ -4,9 +4,22 @@ package store
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
 )
+
+func recoverFailedReplacement(target, tmp string) error {
+	if _, err := os.Lstat(target); err == nil {
+		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(tmp, target)
+}
 
 // procReplaceFileW resolves ReplaceFileW (kernel32). The exported name is
 // "ReplaceFileW"; kernel32 exports no suffix-less "ReplaceFile", so

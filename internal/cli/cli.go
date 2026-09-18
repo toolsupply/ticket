@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strings"
 
 	"ticket/internal/contract"
 	"ticket/internal/domain"
@@ -137,10 +138,20 @@ func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 				fmt.Sprintf("Internal error: %v", r), nil)
 		}
 	}()
+	g := globalOpts{json: jsonRequested(args), scopeName: strings.TrimSpace(os.Getenv("TICKET_SCOPE"))}
+	return dispatchWithGlobals(args, stdout, g)
+}
+
+func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) error {
+	var err error
+	args, g, err = consumeLeadingGlobals(args, g)
+	if err != nil {
+		return err
+	}
 	// Per-invocation state: never leak across dispatches.
 	helpFlag = false
 	helpSeen = false
-	ctx := &commandContext{stdout: stdout, cwd: cwd(), globalOpts: globalOpts{json: jsonRequested(args)}}
+	ctx := &commandContext{stdout: stdout, cwd: cwd(), globalOpts: g}
 	if len(args) == 0 {
 		return emitTopLevelHelp(ctx)
 	}
@@ -161,14 +172,14 @@ func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 		return emitTopLevelVersion(ctx)
 	case "-j", "--json":
 		if len(rest) == 0 {
+			ctx.json = true
 			return emitTopLevelHelp(ctx)
 		}
 		if rest[0] == "-j" || rest[0] == "--json" {
 			return contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --json.", nil)
 		}
-		normalized := append([]string{rest[0]}, rest[1:]...)
-		normalized = append(normalized, "--json")
-		return dispatch(normalized, stdout)
+		g.json = true
+		return dispatchWithGlobals(rest, stdout, g)
 	case "-la", "-al":
 		return cmdList(ctx, append([]string{"-l", "-a"}, rest...), true)
 	case "version":
@@ -232,9 +243,65 @@ func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 	case "help":
 		return cmdHelp(ctx, rest)
 	default:
+		if looksLikeTicketRef(name) {
+			return cmdShow(ctx, args)
+		}
 		return contract.NewError(contract.ErrInvalidArgument,
 			"Unknown command: "+name+".", nil)
 	}
+}
+
+func consumeLeadingGlobals(args []string, g globalOpts) ([]string, globalOpts, error) {
+	seenJSON, seenScope, seenConfig := false, false, false
+	for len(args) > 0 {
+		arg := args[0]
+		switch {
+		case arg == "-j" || arg == "--json":
+			if seenJSON {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --json.", nil)
+			}
+			seenJSON = true
+			g.json = true
+			args = args[1:]
+		case arg == "-c" || arg == "--config":
+			if seenConfig {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --config.", nil)
+			}
+			if len(args) < 2 {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Flag --config requires a value.", nil)
+			}
+			seenConfig = true
+			g.configPath, g.configExplicit = args[1], true
+			args = args[2:]
+		case arg == "--scope":
+			if seenScope {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --scope.", nil)
+			}
+			if len(args) < 2 {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Flag --scope requires a value.", nil)
+			}
+			seenScope = true
+			g.scopeName, g.scopeExplicit = args[1], true
+			args = args[2:]
+		case strings.HasPrefix(arg, "--config="):
+			if seenConfig {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --config.", nil)
+			}
+			seenConfig = true
+			g.configPath, g.configExplicit = strings.TrimPrefix(arg, "--config="), true
+			args = args[1:]
+		case strings.HasPrefix(arg, "--scope="):
+			if seenScope {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --scope.", nil)
+			}
+			seenScope = true
+			g.scopeName, g.scopeExplicit = strings.TrimPrefix(arg, "--scope="), true
+			args = args[1:]
+		default:
+			return args, g, nil
+		}
+	}
+	return args, g, nil
 }
 
 func cwd() string {

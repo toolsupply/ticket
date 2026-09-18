@@ -158,6 +158,85 @@ func TestBackendCommandSemantics(t *testing.T) {
 	}
 }
 
+func TestSVNCommitSchedulesOnlyExplicitMissingPaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "existing"), []byte("ticket\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "unrelated-missing"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "unrelated-missing")); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []recordedCommand
+	run := func(dir, name string, args ...string) ([]byte, error) {
+		calls = append(calls, recordedCommand{dir: dir, name: name, args: append([]string(nil), args...)})
+		if name != "svn" || len(args) < 3 || args[0] != "status" || args[1] != "--quiet" {
+			return nil, nil
+		}
+		if len(args) == 3 && args[2] == "deleted-ticket" {
+			return []byte("!       deleted-ticket\n"), nil
+		}
+		if len(args) == 3 && args[2] == "unversioned-missing" {
+			return nil, nil
+		}
+		return []byte(" M existing\n!       unrelated-missing\n"), nil
+	}
+
+	if err := newBackend("svn", run).Commit(root, "ticket: delete", []string{".", "deleted-ticket", "unversioned-missing"}); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(calls))
+	for _, call := range calls {
+		got = append(got, strings.Join(call.args, " "))
+	}
+	want := []string{
+		"status --quiet deleted-ticket",
+		"delete --force deleted-ticket",
+		"status --quiet unversioned-missing",
+		"add --force --depth infinity existing",
+		"status --quiet existing deleted-ticket",
+		"commit existing deleted-ticket -m ticket: delete",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("SVN calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, call := range calls {
+		if strings.Contains(strings.Join(call.args, " "), "unrelated-missing") {
+			t.Fatalf("unrelated missing path was scheduled or committed: %+v", calls)
+		}
+	}
+
+	calls = nil
+	if err := newBackend("svn", func(dir, name string, args ...string) ([]byte, error) {
+		calls = append(calls, recordedCommand{dir: dir, name: name, args: append([]string(nil), args...)})
+		if name == "svn" && len(args) >= 3 && args[0] == "status" && args[1] == "--quiet" && args[2] == "deleted-ticket" {
+			return []byte("D       deleted-ticket\n"), nil
+		}
+		if name == "svn" && len(args) > 0 && args[0] == "status" {
+			return []byte(" M existing\n"), nil
+		}
+		return nil, nil
+	}).Commit(root, "ticket: retry delete", []string{".", "deleted-ticket"}); err != nil {
+		t.Fatal(err)
+	}
+	got = got[:0]
+	for _, call := range calls {
+		got = append(got, strings.Join(call.args, " "))
+	}
+	want = []string{
+		"status --quiet deleted-ticket",
+		"add --force --depth infinity existing",
+		"status --quiet existing deleted-ticket",
+		"commit existing deleted-ticket -m ticket: retry delete",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("SVN retry calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestGitUpdateAllowsLocalRepositoryWithoutUpstream(t *testing.T) {
 	var calls []recordedCommand
 	noUpstream := errors.New("no upstream configured")

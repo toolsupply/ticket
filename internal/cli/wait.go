@@ -34,6 +34,7 @@ func cmdWait(ctx *commandContext, args []string) error {
 	if err := ctx.check(); err != nil {
 		return err
 	}
+	tags = ctx.workTags(tags)
 	queue, err := workQueue(p.positionals, "wait")
 	if err != nil {
 		return err
@@ -65,7 +66,7 @@ func waitForNext(ctx *commandContext, opts domain.NextOptions) error {
 		}
 		if result.Item != nil {
 			if !ctx.json {
-				return renderHumanTo(ctx.stdout, "wait", result, false)
+				return renderHumanTo(ctx.stdout, "wait", result, false, ctx.decorator())
 			}
 			return emitSuccess(ctx.stdout, result)
 		}
@@ -113,9 +114,7 @@ func attemptWait(ctx *commandContext, opts domain.NextOptions) (*domain.NextResu
 			return nil, root, err
 		}
 		if result.Changed {
-			if err := st.SignalChange(); err != nil {
-				return nil, root, contract.NewError(contract.ErrIOError, "Cannot signal ticket change: "+err.Error(), nil)
-			}
+			_ = st.SignalChange()
 		}
 	}
 	rememberCurrentTicket(st, result)
@@ -123,7 +122,7 @@ func attemptWait(ctx *commandContext, opts domain.NextOptions) (*domain.NextResu
 }
 
 func currentChangeState(ctx *commandContext) (string, error) {
-	root, err := store.Discover(ctx.cwd)
+	root, err := ctx.discoverRoot()
 	if err != nil {
 		return "", err
 	}

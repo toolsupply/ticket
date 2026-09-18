@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -451,9 +452,26 @@ func readTaskFile(st *store.Store, id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(task)
+	info, err := os.Lstat(task)
+	if err != nil {
+		return nil, contract.NewError(contract.ErrIOError, "TASK.md lookup failed: "+err.Error(), map[string]any{"id": id})
+	}
+	file, err := os.Open(task)
 	if err != nil {
 		return nil, contract.NewError(contract.ErrIOError, "TASK.md read failed: "+err.Error(), map[string]any{"id": id})
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, int64(TaskMaxBytes)+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, contract.NewError(contract.ErrIOError, "TASK.md read failed: "+readErr.Error(), map[string]any{"id": id})
+	}
+	if closeErr != nil {
+		return nil, contract.NewError(contract.ErrIOError, "TASK.md close failed: "+closeErr.Error(), map[string]any{"id": id})
+	}
+	if len(data) > TaskMaxBytes {
+		return nil, contract.NewError(contract.ErrFileTooLarge,
+			"TASK.md exceeds the 1 MiB managed-file limit.",
+			map[string]any{"path": id + "/TASK.md", "size": info.Size()})
 	}
 	return data, nil
 }

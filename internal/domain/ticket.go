@@ -348,6 +348,12 @@ func normalizeTags(values []string) ([]string, error) {
 	return out, nil
 }
 
+// NormalizeTags applies the ticket tag syntax and canonical ordering to
+// configuration-provided or command-provided tag values.
+func NormalizeTags(values []string) ([]string, error) {
+	return normalizeTags(values)
+}
+
 func stringSlice(v any) ([]string, bool) {
 	if s, ok := v.([]string); ok {
 		return append([]string(nil), s...), true

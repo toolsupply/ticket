@@ -234,7 +234,7 @@ func TestReviewAndListStates(t *testing.T) {
 	if _, err := Claim(e.st, id, ClaimOptions{Actor: "reviewer"}); err != nil {
 		t.Fatalf("claim review: %v", err)
 	}
-	if _, err := Open(e.st, id, OpenOptions{Handoff: stringPtr("Please revise the edge case.")}); err != nil {
+	if _, err := Open(e.st, id, OpenOptions{Actor: "reviewer", Handoff: stringPtr("Please revise the edge case.")}); err != nil {
 		t.Fatalf("open review: %v", err)
 	}
 	ticket, err := ReadTicket(e.st, id)

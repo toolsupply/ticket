@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +21,17 @@ type Store struct {
 	ids identity.IDSource
 }
 
+var (
+	deleteRename    = os.Rename
+	deleteRemoveAll = os.RemoveAll
+)
+
+const maxDeletionStageAttempts = 16
+
 // OpenOptions injects the ID source used for ticket creation tests.
 type OpenOptions struct {
 	IDSource identity.IDSource
+	Root     string
 }
 
 func (o OpenOptions) withDefaults() OpenOptions {
@@ -36,7 +45,7 @@ func (o OpenOptions) withDefaults() OpenOptions {
 // the exclusive ticket-root lock.
 func Open(cwd string, o OpenOptions) (*Store, error) {
 	o = o.withDefaults()
-	root, err := Discover(cwd)
+	root, err := DiscoverWithRoot(cwd, o.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +115,8 @@ func (st *Store) TicketExists(id string) (bool, error) {
 
 // DeleteTicket removes one canonical ticket directory. The final path is
 // checked with Lstat so a symlink or non-directory can never be followed as
-// a ticket target.
+// a ticket target. The directory is first renamed out of the canonical
+// namespace; cleanup of the staged directory is a separate best-effort step.
 func (st *Store) DeleteTicket(id string) error {
 	if _, _, ok := ParseID(id); !ok {
 		return contract.NewError(contract.ErrInvalidArgument,
@@ -126,9 +136,34 @@ func (st *Store) DeleteTicket(id string) error {
 		return contract.NewError(contract.ErrInvalidRepository,
 			"Ticket target must be a real directory.", map[string]any{"id": id})
 	}
-	if err := os.RemoveAll(path); err != nil {
+	stage, err := temporaryPath(filepath.Join(st.Root, ".local"), id)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < maxDeletionStageAttempts; attempt++ {
+		if _, err := os.Lstat(stage); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return contract.NewError(contract.ErrIOError,
+				"Cannot inspect deletion staging path: "+err.Error(), map[string]any{"id": id})
+		}
+		stage, err = temporaryPath(filepath.Join(st.Root, ".local"), id)
+		if err != nil {
+			return err
+		}
+		if attempt == maxDeletionStageAttempts-1 {
+			return contract.NewError(contract.ErrInternalError,
+				"Deletion staging collisions exceeded the retry budget.", map[string]any{"id": id})
+		}
+	}
+	if err := deleteRename(path, stage); err != nil {
 		return contract.NewError(contract.ErrIOError,
-			"Cannot delete ticket: "+err.Error(), map[string]any{"id": id})
+			"Cannot stage ticket for deletion: "+err.Error(), map[string]any{"id": id})
+	}
+	if err := deleteRemoveAll(stage); err != nil {
+		return contract.NewError(contract.ErrIOError,
+			"Ticket was removed from the repository, but staged cleanup is incomplete: "+err.Error(),
+			map[string]any{"id": id, "removal_applied": true})
 	}
 	return nil
 }
@@ -204,9 +239,9 @@ func InitRoot(root string) (created bool, err error) {
 		name string
 		data []byte
 	}{
-		{"config.json", writeConfig()},
 		{".gitignore", []byte(".local/\n")},
 		{"README.md", initREADME()},
+		{"config.json", writeConfig()},
 	}
 	for _, f := range files {
 		if err := writeFileAtomic(filepath.Join(abs, f.name), f.data); err != nil {
@@ -238,11 +273,40 @@ func checkInitTarget(root string) error {
 		return contract.NewError(contract.ErrIOError,
 			"Cannot read init target: "+err.Error(), nil)
 	}
-	// Only the manager-owned .local directory may pre-exist.
+	// A missing config marks an interrupted initialization. Resume only from
+	// exact regular copies of files that init itself owns.
 	for _, e := range entries {
-		if e.Name() != ".local" {
+		if e.Name() == ".local" {
+			continue
+		}
+		var expected []byte
+		switch e.Name() {
+		case ".gitignore":
+			expected = []byte(".local/\n")
+		case "README.md":
+			expected = initREADME()
+		default:
 			return contract.NewError(contract.ErrInvalidRepository,
 				"Init target is not empty; refusing to adopt arbitrary contents.", nil)
+		}
+		path := filepath.Join(root, e.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return contract.NewError(contract.ErrIOError,
+				"Cannot inspect init file: "+err.Error(), nil)
+		}
+		if !info.Mode().IsRegular() {
+			return contract.NewError(contract.ErrInvalidRepository,
+				"Init target contains a non-regular manager file.", nil)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return contract.NewError(contract.ErrIOError,
+				"Cannot read init file: "+err.Error(), nil)
+		}
+		if !bytes.Equal(data, expected) {
+			return contract.NewError(contract.ErrInvalidRepository,
+				"Init target contains a modified manager file; refusing to overwrite it.", nil)
 		}
 	}
 	if err := ensureLocalDir(filepath.Join(root, ".local")); err != nil {

@@ -33,7 +33,7 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 		return err
 	}
 
-	draft, err := editDraft(draftPath, "", objectiveEditLine(starterTicket))
+	draft, err := editDraft(draftPath, "", objectiveEditLine(starterTicket), &ctx.globalOpts)
 	if err != nil {
 		return err
 	}
@@ -50,12 +50,10 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 	if err := persistMutation(backend, st, "create", res); err != nil {
 		return preserveDraftError(err, draftPath)
 	}
-	if err := st.SignalChange(); err != nil {
-		return preserveDraftError(contract.NewError(contract.ErrIOError, "Cannot signal ticket change: "+err.Error(), nil), draftPath)
-	}
+	_ = st.SignalChange()
 	_ = os.Remove(draftPath)
 	rememberCurrentTicket(st, res)
-	return renderHumanTo(ctx.stdout, "create", res, false)
+	return renderHumanTo(ctx.stdout, "create", res, false, ctx.decorator())
 }
 
 // editWithEditor snapshots an existing ticket under the lock, releases it for
@@ -75,6 +73,11 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		st.Close()
 		return err
 	}
+	actor, _ := ctx.effectiveActor()
+	if err := checkEditOwnership(beforeTicket, actor); err != nil {
+		st.Close()
+		return err
+	}
 	original := append([]byte(nil), beforeTicket.FileBytes...)
 	draftPath, err := createDraft(st.Root, original)
 	st.Close()
@@ -82,7 +85,7 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		return err
 	}
 
-	draft, err := editDraft(draftPath, full, objectiveEditLine(beforeTicket))
+	draft, err := editDraft(draftPath, full, objectiveEditLine(beforeTicket), &ctx.globalOpts)
 	if err != nil {
 		return err
 	}
@@ -94,6 +97,9 @@ func editWithEditor(ctx *commandContext, ref string) error {
 	defer st.Close()
 	current, err := domain.ReadTicket(st, full)
 	if err != nil {
+		return preserveDraftError(err, draftPath)
+	}
+	if err := checkEditOwnership(current, actor); err != nil {
 		return preserveDraftError(err, draftPath)
 	}
 	if !bytes.Equal(original, current.FileBytes) {
@@ -108,12 +114,24 @@ func editWithEditor(ctx *commandContext, ref string) error {
 	if err := persistMutation(backend, st, "edit", res); err != nil {
 		return preserveDraftError(err, draftPath)
 	}
-	if err := st.SignalChange(); err != nil {
-		return preserveDraftError(contract.NewError(contract.ErrIOError, "Cannot signal ticket change: "+err.Error(), nil), draftPath)
-	}
+	_ = st.SignalChange()
 	_ = os.Remove(draftPath)
 	rememberCurrentTicket(st, res)
-	return renderHumanTo(ctx.stdout, "edit", res, false)
+	return renderHumanTo(ctx.stdout, "edit", res, false, ctx.decorator())
+}
+
+func checkEditOwnership(ticket *domain.Ticket, actor string) error {
+	if ticket.Assignee == "" {
+		return nil
+	}
+	if actor == "" {
+		return contract.NewError(contract.ErrMissingActor, "An actor is required.", nil)
+	}
+	if ticket.Assignee != actor {
+		return contract.NewError(contract.ErrAlreadyClaimed,
+			"The ticket is assigned to another actor.", map[string]any{"id": ticket.ID})
+	}
+	return nil
 }
 
 func createDraft(root string, data []byte) (string, error) {
@@ -139,9 +157,9 @@ func createDraft(root string, data []byte) (string, error) {
 	return path, nil
 }
 
-func editDraft(path, id string, line int) (*domain.Ticket, error) {
+func editDraft(path, id string, line int, configs ...*globalOpts) (*domain.Ticket, error) {
 	for {
-		command, args, err := editorInvocation(selectedEditor(), path, line)
+		command, args, err := editorInvocation(selectedEditor(configs...), path, line)
 		if err != nil {
 			return nil, preserveDraftError(err, path)
 		}

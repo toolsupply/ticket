@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,28 +17,59 @@ import (
 
 // globalOpts are the flags accepted on every command.
 type globalOpts struct {
-	json  bool
-	actor string
-	debug bool
+	json           bool
+	actor          string
+	debug          bool
+	scopeName      string
+	configPath     string
+	configExplicit bool
+	scopeExplicit  bool
+	configLoaded   bool
+	config         userConfig
+	scope          *scopeConfig
 }
 
 func (g *globalOpts) register(p *parser) {
 	p.boolValue("json", &g.json)
 	p.str("actor", &g.actor)
 	p.boolValue("debug", &g.debug)
+	g.registerConfig(p)
 }
 
 func (g *globalOpts) registerWithoutActor(p *parser) {
 	p.boolValue("json", &g.json)
 	p.boolValue("debug", &g.debug)
+	g.registerConfig(p)
 }
 
-func (g *globalOpts) check() error {
-	return nil
+func (g *globalOpts) registerConfig(p *parser) {
+	p.flag("config", kindString, func(value string) error {
+		if g.configExplicit {
+			return duplicateFlag("config")
+		}
+		g.configPath, g.configExplicit = value, true
+		return nil
+	}, false)
+	p.alias("c", "config")
+	p.flag("scope", kindString, func(value string) error {
+		if g.scopeExplicit {
+			return duplicateFlag("scope")
+		}
+		g.scopeName = value
+		g.scopeExplicit = true
+		return nil
+	}, false)
+}
+
+func (g *globalOpts) check(cwd string) error {
+	return g.loadConfig(cwd)
 }
 
 func (g *globalOpts) openStore(cwd string) (*store.Store, error) {
-	st, err := store.Open(cwd, store.OpenOptions{})
+	if err := g.loadConfig(cwd); err != nil {
+		return nil, err
+	}
+	st, err := store.Open(cwd, store.OpenOptions{Root: g.selectedRoot()})
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +103,29 @@ type commandContext struct {
 	globalOpts
 }
 
+func (ctx *commandContext) check() error {
+	return ctx.globalOpts.check(ctx.cwd)
+}
+
+func (ctx *commandContext) createTags(explicit []string) []string {
+	return ctx.globalOpts.createTags(explicit)
+}
+
+func (ctx *commandContext) workTags(explicit []string) []string {
+	return ctx.globalOpts.workTags(explicit)
+}
+
+func (ctx *commandContext) decorator() string {
+	return ctx.globalOpts.decorator()
+}
+
+func (ctx *commandContext) discoverRoot() (string, error) {
+	if err := ctx.globalOpts.loadConfig(ctx.cwd); err != nil {
+		return "", err
+	}
+	return store.DiscoverWithRoot(ctx.cwd, ctx.globalOpts.selectedRoot())
+}
+
 // emitSuccess writes the success object (JSON mode).
 func emitSuccess(stdout *bytes.Buffer, v any) error {
 	return emitJSON(stdout, v)
@@ -95,14 +150,12 @@ func runRepoCommandMode(ctx *commandContext, cmd string, mutation bool, fn func(
 		if err := persistMutation(backend, st, cmd, res); err != nil {
 			return err
 		}
-		if err := st.SignalChange(); err != nil {
-			return contract.NewError(contract.ErrIOError, "Cannot signal ticket change: "+err.Error(), nil)
-		}
+		_ = st.SignalChange()
 	}
 	normalizeShowPaths(ctx, res)
 	rememberCurrentTicket(st, res)
 	if !ctx.json {
-		return renderHumanTo(stdout, cmd, res, ctx.markdown)
+		return renderHumanTo(stdout, cmd, res, ctx.markdown, ctx.decorator())
 	}
 	return emitSuccess(stdout, res)
 }
@@ -152,7 +205,8 @@ func openSynchronizedStore(g *globalOpts, cwd string) (*store.Store, scm.Backend
 	if err != nil {
 		return nil, nil, err
 	}
-	backend, err := scm.Configure()
+	kind, mode := g.effectiveSCM()
+	backend, err := scm.ConfigureValues(kind, mode)
 	if err != nil {
 		st.Close()
 		return nil, nil, err
@@ -176,10 +230,111 @@ func persistMutation(backend scm.Backend, st *store.Store, cmd string, result an
 	if backend == nil {
 		return nil
 	}
-	if err := backend.Commit(st.Root, commitMessage(cmd, result), []string{"."}); err != nil {
-		return err
+	paths := []string{"."}
+	paths = append(paths, deletedResultIDs(result)...)
+	if err := backend.Commit(st.Root, commitMessage(cmd, result), paths); err != nil {
+		return scmMutationError(err, result)
 	}
-	return backend.Publish(st.Root)
+	if err := backend.Publish(st.Root); err != nil {
+		return scmMutationError(err, result)
+	}
+	return nil
+}
+
+func deletedResultIDs(result any) []string {
+	switch value := result.(type) {
+	case *domain.DeleteResult:
+		if value.Changed {
+			return []string{value.ID}
+		}
+	case *domain.BatchDeleteResult:
+		ids := make([]string, 0, len(value.Items))
+		for _, item := range value.Items {
+			if item.Changed {
+				ids = append(ids, item.ID)
+			}
+		}
+		return ids
+	}
+	return nil
+}
+
+func scmMutationError(err error, result any) error {
+	details := map[string]any{}
+	applied := resultChanged(result)
+	if applied {
+		details["mutation_applied"] = true
+		if id := changedResultID(result); id != "" {
+			details["id"] = id
+		}
+	}
+	message := "SCM persistence failed: " + scmErrorMessage(err)
+	if applied {
+		message = "Local ticket mutation was applied, but " + message
+	}
+	return contract.NewError(contract.ErrIOError, message, details)
+}
+
+func scmErrorMessage(err error) string {
+	var ce *contract.Error
+	if errors.As(err, &ce) {
+		return ce.Message
+	}
+	return err.Error()
+}
+
+func resultChanged(result any) bool {
+	switch value := result.(type) {
+	case *domain.CreateResult:
+		return value.Changed
+	case *domain.DeleteResult:
+		return value.Changed
+	case *domain.BatchDeleteResult:
+		for _, item := range value.Items {
+			if item.Changed {
+				return true
+			}
+		}
+	case *EditResult:
+		return value.Changed
+	case *domain.UpdateResult:
+		return value.Changed
+	case *domain.ClaimResult:
+		return value.Changed
+	case *domain.ReleaseResult:
+		return value.Changed
+	case *domain.TransitionResult:
+		return value.Changed
+	case *domain.BatchTransitionResult:
+		for _, item := range value.Items {
+			if item.Changed {
+				return true
+			}
+		}
+	case *domain.NextResult:
+		return value.Changed
+	}
+	return false
+}
+
+func changedResultID(result any) string {
+	switch value := result.(type) {
+	case *domain.BatchDeleteResult:
+		for _, item := range value.Items {
+			if item.Changed {
+				return item.ID
+			}
+		}
+	case *domain.BatchTransitionResult:
+		for _, item := range value.Items {
+			if item.Changed {
+				return item.ID
+			}
+		}
+	default:
+		return resultID(result)
+	}
+	return ""
 }
 
 func mutationCommand(command string) bool {
@@ -205,6 +360,10 @@ func resultID(result any) string {
 		return value.ID
 	case *domain.DeleteResult:
 		return value.ID
+	case *domain.BatchDeleteResult:
+		if len(value.Items) > 0 {
+			return value.Items[0].ID
+		}
 	case *EditResult:
 		return value.ID
 	case *domain.UpdateResult:
@@ -287,6 +446,6 @@ func rememberCurrentTicket(st *store.Store, result any) {
 		id = value["id"]
 	}
 	if id != "" {
-		_ = os.WriteFile(filepath.Join(st.Root, ".local", "current"), []byte(id+"\n"), 0o600)
+		_ = st.RememberCurrent(id)
 	}
 }

@@ -49,6 +49,21 @@ func TestWaitUsesNextSelectionAndResumesActor(t *testing.T) {
 	}
 }
 
+func TestMutationSucceedsWhenChangeSignalWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	if err := os.Mkdir(filepath.Join(dir, "tickets", ".local", "change"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created := exactlyOneJSONObject(t, mustCLI(t, "create", "Signal failure", "The ticket mutation must still succeed."))
+	id := created["id"].(string)
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id))
+	if view["id"] != id || view["state"] != "open" {
+		t.Fatalf("mutation result after signal failure: %v", view)
+	}
+}
+
 func TestNextClaimRejectsMultipleActiveActorTickets(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

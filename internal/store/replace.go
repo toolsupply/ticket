@@ -46,8 +46,11 @@ func (st *Store) ReplaceTask(id string, data []byte, maxBytes int) (bool, error)
 		return false, contract.NewError(contract.ErrIOError, "Cannot write temporary replacement: "+err.Error(), nil)
 	}
 	if err := publishReplace(abs, tmp); err != nil {
-		os.Remove(tmp)
-		return false, contract.NewError(contract.ErrIOError, "Publish failed: "+err.Error(), nil)
+		message := "Publish failed: " + err.Error()
+		if recoveryErr := recoverFailedReplacement(abs, tmp); recoveryErr != nil {
+			message += "; recovery failed: " + recoveryErr.Error()
+		}
+		return false, contract.NewError(contract.ErrIOError, message, nil)
 	}
 	return true, nil
 }

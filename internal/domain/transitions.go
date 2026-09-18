@@ -44,16 +44,86 @@ type OpenOptions struct {
 	Handoff *string
 	Actor   string
 	Message *string
+	Claim   bool
 }
 
 type TransitionResult struct {
-	ID      string `json:"id"`
-	Changed bool   `json:"changed"`
-	State   string `json:"state"`
+	ID       string `json:"id"`
+	Changed  bool   `json:"changed"`
+	State    string `json:"state"`
+	Assignee string `json:"assignee,omitempty"`
 }
 
 type BatchTransitionResult struct {
 	Items []TransitionResult `json:"items"`
+}
+
+type preparedTransition struct {
+	data   []byte
+	result TransitionResult
+}
+
+func prepareTransition(t *Ticket, newBody []byte, state string) (*preparedTransition, error) {
+	data, err := renderTransition(t, newBody)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedTransition{
+		data:   data,
+		result: TransitionResult{ID: t.ID, Changed: true, State: state},
+	}, nil
+}
+
+func renderTransition(t *Ticket, newBody []byte) ([]byte, error) {
+	data, err := renderUpdated(t, newBody, map[string]bool{"state": true, "assignee": true})
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > TaskMaxBytes {
+		return nil, contract.NewError(contract.ErrFileTooLarge, "Updated TASK.md exceeds the 1 MiB managed-file limit.", nil)
+	}
+	if _, err := ParseTicketFile(t.ID, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func publishPreparedTransition(st *store.Store, prepared *preparedTransition) (*TransitionResult, error) {
+	if !prepared.result.Changed {
+		return &prepared.result, nil
+	}
+	if _, err := st.ReplaceTask(prepared.result.ID, prepared.data, TaskMaxBytes); err != nil {
+		return nil, err
+	}
+	return &prepared.result, nil
+}
+
+func prepareClose(st *store.Store, id string, opts CloseOptions) (*preparedTransition, error) {
+	full, err := mustResolve(st, id)
+	if err != nil {
+		return nil, err
+	}
+	t, err := ReadTicket(st, full)
+	if err != nil {
+		return nil, err
+	}
+	if t.State == "completed" {
+		return &preparedTransition{result: TransitionResult{ID: full, State: "completed"}}, nil
+	}
+	if t.State == "rejected" {
+		return nil, contract.NewError(contract.ErrInvalidTransition, "Rejected tickets cannot be closed.", nil)
+	}
+	sections := map[string]string{}
+	if strings.TrimSpace(opts.Outcome) != "" {
+		sections["outcome"] = opts.Outcome
+	}
+	newBody, err := transitionBody(t, sections, opts.Message, opts.Actor)
+	if err != nil {
+		return nil, err
+	}
+	t.State = "completed"
+	t.Assignee = ""
+	return prepareTransition(t, newBody, "completed")
 }
 
 // CloseMany closes the supplied tickets in deterministic ID order. All
@@ -78,18 +148,17 @@ func CloseMany(st *store.Store, ids []string, opts CloseOptions) (*BatchTransiti
 			return nil, err
 		}
 	}
+	prepared := make([]*preparedTransition, 0, len(resolved))
 	for _, id := range resolved {
-		t, err := ReadTicket(st, id)
+		transition, err := prepareClose(st, id, opts)
 		if err != nil {
 			return nil, err
 		}
-		if t.State == "rejected" {
-			return nil, contract.NewError(contract.ErrInvalidTransition, "Rejected tickets cannot be closed.", nil)
-		}
+		prepared = append(prepared, transition)
 	}
 	result := &BatchTransitionResult{Items: make([]TransitionResult, 0, len(resolved))}
-	for _, id := range resolved {
-		closed, err := Close(st, id, opts)
+	for _, transition := range prepared {
+		closed, err := publishPreparedTransition(st, transition)
 		if err != nil {
 			return nil, err
 		}
@@ -119,31 +188,11 @@ func CloseAll(st *store.Store, opts CloseOptions) (*BatchTransitionResult, error
 // Close is the authoritative human completion action. It may close any
 // nonterminal work state and clears stale ownership; an outcome is optional.
 func Close(st *store.Store, id string, opts CloseOptions) (*TransitionResult, error) {
-	full, err := mustResolve(st, id)
+	prepared, err := prepareClose(st, id, opts)
 	if err != nil {
 		return nil, err
 	}
-	t, err := ReadTicket(st, full)
-	if err != nil {
-		return nil, err
-	}
-	if t.State == "completed" {
-		return &TransitionResult{ID: full, Changed: false, State: "completed"}, nil
-	}
-	if t.State == "rejected" {
-		return nil, contract.NewError(contract.ErrInvalidTransition, "Rejected tickets cannot be closed.", nil)
-	}
-	sections := map[string]string{}
-	if strings.TrimSpace(opts.Outcome) != "" {
-		sections["outcome"] = opts.Outcome
-	}
-	newBody, err := transitionBody(t, sections, opts.Message, opts.Actor)
-	if err != nil {
-		return nil, err
-	}
-	t.State = "completed"
-	t.Assignee = ""
-	return publishTransition(st, t, newBody, "completed")
+	return publishPreparedTransition(st, prepared)
 }
 
 func Reject(st *store.Store, id string, opts RejectOptions) (*TransitionResult, error) {
@@ -194,7 +243,39 @@ func Reject(st *store.Store, id string, opts RejectOptions) (*TransitionResult, 
 }
 
 func Approve(st *store.Store, id string, opts ReviewOptions) (*TransitionResult, error) {
-	return moveAssigned(st, id, opts.Actor, nil, opts.Message, "review", "signoff", "approve")
+	prepared, err := prepareApprove(st, id, opts)
+	if err != nil {
+		return nil, err
+	}
+	return publishPreparedTransition(st, prepared)
+}
+
+func prepareApprove(st *store.Store, id string, opts ReviewOptions) (*preparedTransition, error) {
+	full, err := mustResolve(st, id)
+	if err != nil {
+		return nil, err
+	}
+	t, err := ReadTicket(st, full)
+	if err != nil {
+		return nil, err
+	}
+	if t.State != "review" {
+		return nil, contract.NewError(contract.ErrInvalidTransition, "Cannot approve a ticket in state "+t.State+".", nil)
+	}
+	if t.Assignee != "" {
+		if err := validateActor(opts.Actor); err != nil {
+			return nil, err
+		}
+		if t.Assignee != opts.Actor {
+			return nil, contract.NewError(contract.ErrAlreadyClaimed, "The ticket is assigned to another actor.", map[string]any{"id": full})
+		}
+	}
+	t.State, t.Assignee = "signoff", ""
+	newBody, err := transitionBody(t, map[string]string{}, opts.Message, opts.Actor)
+	if err != nil {
+		return nil, err
+	}
+	return prepareTransition(t, newBody, "signoff")
 }
 
 // ApproveMany approves supplied review tickets in deterministic ID order.
@@ -212,9 +293,17 @@ func ApproveMany(st *store.Store, ids []string, opts ReviewOptions) (*BatchTrans
 		}
 	}
 	sort.Strings(resolved)
-	result := &BatchTransitionResult{Items: make([]TransitionResult, 0, len(resolved))}
+	prepared := make([]*preparedTransition, 0, len(resolved))
 	for _, id := range resolved {
-		approved, err := Approve(st, id, opts)
+		transition, err := prepareApprove(st, id, opts)
+		if err != nil {
+			return nil, err
+		}
+		prepared = append(prepared, transition)
+	}
+	result := &BatchTransitionResult{Items: make([]TransitionResult, 0, len(resolved))}
+	for _, transition := range prepared {
+		approved, err := publishPreparedTransition(st, transition)
 		if err != nil {
 			return nil, err
 		}
@@ -250,6 +339,11 @@ func stateIDs(st *store.Store, state string) ([]string, error) {
 }
 
 func Open(st *store.Store, id string, opts OpenOptions) (*TransitionResult, error) {
+	if opts.Claim {
+		if err := validateActor(opts.Actor); err != nil {
+			return nil, err
+		}
+	}
 	full, err := mustResolve(st, id)
 	if err != nil {
 		return nil, err
@@ -257,6 +351,28 @@ func Open(st *store.Store, id string, opts OpenOptions) (*TransitionResult, erro
 	t, err := ReadTicket(st, full)
 	if err != nil {
 		return nil, err
+	}
+	if t.Assignee != "" {
+		if err := validateActor(opts.Actor); err != nil {
+			return nil, err
+		}
+		if t.Assignee != opts.Actor {
+			return nil, contract.NewError(contract.ErrAlreadyClaimed, "The ticket is assigned to another actor.", map[string]any{"id": full})
+		}
+	}
+	if opts.Claim {
+		candidate := *t
+		candidate.State = "open"
+		candidate.Assignee = ""
+		tickets, err := loadGraph(st)
+		if err != nil {
+			return nil, err
+		}
+		idx := newGraphIndex(tickets)
+		if readiness := readinessForWithChildren(&candidate, idx.byID, idx.children); !readiness.Ready {
+			return nil, contract.NewError(contract.ErrDependencyUnresolved,
+				"Ticket is not ready to claim.", map[string]any{"blockers": readiness.Blockers})
+		}
 	}
 	sections := map[string]string{}
 	if opts.Handoff != nil {
@@ -266,12 +382,23 @@ func Open(st *store.Store, id string, opts OpenOptions) (*TransitionResult, erro
 	if err != nil {
 		return nil, err
 	}
-	if t.State == "open" && t.Assignee == "" && opts.Handoff == nil && opts.Message == nil {
+	if !opts.Claim && t.State == "open" && t.Assignee == "" && opts.Handoff == nil && opts.Message == nil {
 		return &TransitionResult{ID: full, Changed: false, State: "open"}, nil
 	}
 	t.State = "open"
-	t.Assignee = ""
-	return publishTransition(st, t, newBody, "open")
+	if opts.Claim {
+		t.Assignee = opts.Actor
+	} else {
+		t.Assignee = ""
+	}
+	result, err := publishTransition(st, t, newBody, "open")
+	if err != nil {
+		return nil, err
+	}
+	if opts.Claim {
+		result.Assignee = opts.Actor
+	}
+	return result, nil
 }
 
 func Submit(st *store.Store, id string, opts SubmitOptions) (*TransitionResult, error) {

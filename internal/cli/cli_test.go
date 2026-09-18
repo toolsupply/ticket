@@ -157,6 +157,8 @@ func TestAlternateRepositoryAndInitPathAreRejected(t *testing.T) {
 	}
 	if out, code := runCLI(t, "init", "other"); code == 0 {
 		t.Fatalf("init path was accepted: %q", out)
+	} else if !strings.Contains(out, "use TICKET_REPOSITORY or a selected scope to choose the target") {
+		t.Fatalf("stale init path error: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "tickets")); !os.IsNotExist(err) {
 		t.Fatalf("rejected init created tickets: %v", err)
@@ -166,6 +168,7 @@ func TestAlternateRepositoryAndInitPathAreRejected(t *testing.T) {
 func TestTicketRootSelectsRepository(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	t.Setenv("TICKET_REPOSITORY", "")
 	t.Setenv("TICKET_ROOT", filepath.Join("tickets", "module-a"))
 	if out, code := runCLIHuman(t, "init"); code != 0 || !strings.Contains(out, "module-a") {
 		t.Fatalf("init selected root: exit=%d out=%q", code, out)
@@ -177,6 +180,22 @@ func TestTicketRootSelectsRepository(t *testing.T) {
 	id := strings.Fields(created)[1]
 	if _, err := os.Stat(filepath.Join(dir, "tickets", "module-a", id, "TASK.md")); err != nil {
 		t.Fatalf("selected ticket root missing ticket: %v", err)
+	}
+}
+
+func TestTicketRepositorySelectsRepositoryAndWinsOverLegacyRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TICKET_REPOSITORY", filepath.Join("tickets", "module-a"))
+	t.Setenv("TICKET_ROOT", filepath.Join("tickets", "legacy"))
+	if out, code := runCLIHuman(t, "init"); code != 0 || !strings.Contains(out, "module-a") {
+		t.Fatalf("init selected repository: exit=%d out=%q", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tickets", "module-a", "config.json")); err != nil {
+		t.Fatalf("repository root missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tickets", "legacy")); !os.IsNotExist(err) {
+		t.Fatalf("legacy root unexpectedly initialized: %v", err)
 	}
 }
 
@@ -199,6 +218,23 @@ func TestUnknownCommand(t *testing.T) {
 	m := exactlyOneJSONObject(t, out)
 	if m["error"].(map[string]any)["code"] != "invalid_argument" {
 		t.Fatalf("code=%v", m["error"])
+	}
+}
+
+func TestBareTicketIDUsesShowCommand(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	created := exactlyOneJSONObject(t, mustCLI(t, "create", "Bare show", "Show the ticket."))
+	id := created["id"].(string)
+	shown := exactlyOneJSONObject(t, mustCLI(t, id, "--full"))
+	if shown["id"] != id || shown["title"] != "Bare show" {
+		t.Fatalf("bare ticket show: %v", shown)
+	}
+	if !strings.Contains(shown["body"].(string), "Show the ticket.") {
+		t.Fatalf("bare ticket body: %v", shown["body"])
 	}
 }
 
@@ -395,7 +431,7 @@ func TestEditorHelpFollowsExamples(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("edit help: exit=%d out=%q", code, out)
 	}
-	want := "Examples:\n  $ ticket edit\n\nEditor:\n  TICKET_EDITOR, then VISUAL, then EDITOR.\n  Defaults to vi on Unix and notepad.exe on Windows.\n\n"
+	want := "Examples:\n  $ ticket edit\n\nEditor:\n  TICKET_EDITOR, config.editor, VISUAL, EDITOR, then the platform default.\n  Defaults to vi on Unix and notepad.exe on Windows.\n\n"
 	if !strings.Contains(out, want) {
 		t.Fatalf("editor note is not spaced after examples: %q", out)
 	}
@@ -631,6 +667,11 @@ func TestSCMUpdateFailurePreventsMutationInBothOutputModes(t *testing.T) {
 	t.Setenv("TICKET_SCM_MODE", "sync")
 	if out, code := runCLI(t, "create", "Blocked by SCM", "Should not publish."); code == 0 || errCode(t, out) != "io_error" {
 		t.Fatalf("JSON update failure: exit=%d out=%q", code, out)
+	} else {
+		errorObject := exactlyOneJSONObject(t, out)["error"].(map[string]any)
+		if details, ok := errorObject["details"].(map[string]any); ok && details["mutation_applied"] == true {
+			t.Fatalf("pre-mutation failure falsely reports applied mutation: %v", errorObject)
+		}
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "tickets"))
 	if err != nil {
@@ -644,6 +685,110 @@ func TestSCMUpdateFailurePreventsMutationInBothOutputModes(t *testing.T) {
 	stdout, stderr, code := runCLIHumanError(t, "create", "Human SCM failure", "Should also not publish.")
 	if code == 0 || stdout != "" || !strings.Contains(stderr, "remote unavailable") {
 		t.Fatalf("human update failure: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestSCMFailureAfterCreateReportsAppliedMutation(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	binDir := filepath.Join(dir, "bin")
+	installFakeSCM(t, binDir, "scm-push-retry")
+	t.Setenv("SCM_LOG", filepath.Join(dir, "scm.log"))
+	t.Setenv("SCM_STATE", filepath.Join(dir, "scm-committed"))
+	t.Setenv("FAIL_PUSH", "1")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	out, code := runCLI(t, "create", "SCM create failure", "Inspect the persisted ticket.")
+	if code == 0 || errCode(t, out) != "io_error" {
+		t.Fatalf("create push failure: exit=%d out=%q", code, out)
+	}
+	errorObject := exactlyOneJSONObject(t, out)["error"].(map[string]any)
+	if !strings.Contains(errorObject["message"].(string), "git push failed") {
+		t.Fatalf("create failure message: %v", errorObject)
+	}
+	details := errorObject["details"].(map[string]any)
+	id, _ := details["id"].(string)
+	if details["mutation_applied"] != true || id == "" {
+		t.Fatalf("create failure details: %v", errorObject)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id))
+	if view["id"] != id || view["state"] != "open" {
+		t.Fatalf("created ticket after SCM failure: %v", view)
+	}
+}
+
+func TestSCMFailureAfterSubmitReportsAppliedMutation(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "SCM submit failure", "Inspect the submitted ticket."))["id"].(string)
+	if out, code := runCLI(t, "claim", id, "--actor", "worker"); code != 0 {
+		t.Fatalf("claim: exit=%d out=%q", code, out)
+	}
+	binDir := filepath.Join(dir, "bin")
+	installFakeSCM(t, binDir, "scm-push-retry")
+	t.Setenv("SCM_LOG", filepath.Join(dir, "scm.log"))
+	t.Setenv("SCM_STATE", filepath.Join(dir, "scm-committed"))
+	t.Setenv("FAIL_PUSH", "1")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	out, code := runCLI(t, "submit", id, "--actor", "worker")
+	if code == 0 || errCode(t, out) != "io_error" {
+		t.Fatalf("submit push failure: exit=%d out=%q", code, out)
+	}
+	errorObject := exactlyOneJSONObject(t, out)["error"].(map[string]any)
+	if !strings.Contains(errorObject["message"].(string), "git push failed") {
+		t.Fatalf("submit failure message: %v", errorObject)
+	}
+	details := errorObject["details"].(map[string]any)
+	if details["mutation_applied"] != true || details["id"] != id {
+		t.Fatalf("submit failure details: %v", errorObject)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id))
+	if view["id"] != id || view["state"] != "review" {
+		t.Fatalf("submitted ticket after SCM failure: %v", view)
+	}
+}
+
+func TestSCMBatchFailureReportsChangedTicket(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	first := exactlyOneJSONObject(t, mustCLI(t, "create", "Completed first", "Keep the first ticket completed."))["id"].(string)
+	second := exactlyOneJSONObject(t, mustCLI(t, "create", "Open second", "Keep the second ticket open."))["id"].(string)
+	if first > second {
+		first, second = second, first
+	}
+	if out, code := runCLI(t, "close", first); code != 0 {
+		t.Fatalf("close first: exit=%d out=%q", code, out)
+	}
+	binDir := filepath.Join(dir, "bin")
+	installFakeSCM(t, binDir, "scm-push-retry")
+	t.Setenv("SCM_LOG", filepath.Join(dir, "scm.log"))
+	t.Setenv("SCM_STATE", filepath.Join(dir, "scm-committed"))
+	t.Setenv("FAIL_PUSH", "1")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	out, code := runCLI(t, "close", first, second)
+	if code == 0 || errCode(t, out) != "io_error" {
+		t.Fatalf("batch push failure: exit=%d out=%q", code, out)
+	}
+	errorObject := exactlyOneJSONObject(t, out)["error"].(map[string]any)
+	details := errorObject["details"].(map[string]any)
+	if details["mutation_applied"] != true || details["id"] != second {
+		t.Fatalf("batch failure details: %v", errorObject)
+	}
+	firstView := exactlyOneJSONObject(t, mustCLI(t, "show", first))
+	secondView := exactlyOneJSONObject(t, mustCLI(t, "show", second))
+	if firstView["state"] != "completed" || secondView["state"] != "completed" {
+		t.Fatalf("batch states after SCM failure: first=%v second=%v", firstView, secondView)
 	}
 }
 

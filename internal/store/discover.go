@@ -12,6 +12,25 @@ import (
 // <dir>/tickets/config.json. The nearest valid ticket repository wins;
 // discovery is independent of any particular source-control layout.
 func Discover(cwd string) (string, error) {
+	return discover(cwd, "")
+}
+
+// DiscoverWithRoot resolves an explicitly selected ticket root. An empty
+// configured root preserves the normal TICKET_ROOT and upward-discovery rules.
+func DiscoverWithRoot(cwd, configuredRoot string) (string, error) {
+	return discover(cwd, configuredRoot)
+}
+
+// ConfiguredRoot returns the explicit ticket root from the current process.
+// TICKET_ROOT remains a legacy alias for TICKET_REPOSITORY.
+func ConfiguredRoot() string {
+	if configured := os.Getenv("TICKET_REPOSITORY"); configured != "" {
+		return configured
+	}
+	return os.Getenv("TICKET_ROOT")
+}
+
+func discover(cwd, configuredRoot string) (string, error) {
 	notFound := func(format string, args ...any) *contract.Error {
 		return contract.NewError(contract.ErrRepoNotFound,
 			fmt.Sprintf(format, args...), nil)
@@ -20,7 +39,11 @@ func Discover(cwd string) (string, error) {
 	if err != nil {
 		return "", notFound("cannot resolve current directory")
 	}
-	if configured := os.Getenv("TICKET_ROOT"); configured != "" {
+	configured := configuredRoot
+	if configured == "" {
+		configured = ConfiguredRoot()
+	}
+	if configured != "" {
 		root := configured
 		if !filepath.IsAbs(root) {
 			root = filepath.Join(abs, root)

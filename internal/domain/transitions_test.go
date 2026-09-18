@@ -155,3 +155,65 @@ func TestCloseManyRejectedPreflightPreservesEarlierTargets(t *testing.T) {
 		t.Fatalf("failed batch changed open target: %v", err)
 	}
 }
+
+func TestApproveManyOwnershipConflictPreservesEarlierTargets(t *testing.T) {
+	e := newEnv(t, 9506)
+	unassigned := workflowTicket(t, e, "unassigned review")
+	assigned := workflowTicket(t, e, "assigned review")
+	if _, err := Submit(e.st, unassigned, SubmitOptions{}); err != nil {
+		t.Fatalf("submit unassigned review: %v", err)
+	}
+	if _, err := Claim(e.st, assigned, ClaimOptions{Actor: "worker"}); err != nil {
+		t.Fatalf("claim assigned review: %v", err)
+	}
+	if _, err := Submit(e.st, assigned, SubmitOptions{Actor: "worker"}); err != nil {
+		t.Fatalf("submit assigned review: %v", err)
+	}
+	insertTaskFMLine(t, e.base, assigned, "assignee: other\n")
+	firstBefore, err := os.ReadFile(filepath.Join(e.base, "tickets", unassigned, "TASK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBefore, err := os.ReadFile(filepath.Join(e.base, "tickets", assigned, "TASK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApproveMany(e.st, []string{unassigned, assigned}, ReviewOptions{Actor: "reviewer"}); err == nil || contractCode(t, err) != contract.ErrAlreadyClaimed {
+		t.Fatalf("assigned target accepted: %v", err)
+	}
+	firstAfter, err := os.ReadFile(filepath.Join(e.base, "tickets", unassigned, "TASK.md"))
+	if err != nil || !bytes.Equal(firstBefore, firstAfter) {
+		t.Fatalf("ownership conflict changed earlier target: %v", err)
+	}
+	secondAfter, err := os.ReadFile(filepath.Join(e.base, "tickets", assigned, "TASK.md"))
+	if err != nil || !bytes.Equal(secondBefore, secondAfter) {
+		t.Fatalf("ownership conflict changed later target: %v", err)
+	}
+}
+
+func TestCloseManyWorkLogErrorPreservesEarlierTargets(t *testing.T) {
+	e := newEnv(t, 9507)
+	first := e.create(t, "first close", CreateOptions{Sections: map[string]string{"objective": "first"}})
+	second := e.create(t, "second close", CreateOptions{Sections: map[string]string{"objective": "second"}})
+	secondPath := filepath.Join(e.base, "tickets", second, "TASK.md")
+	secondBody, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBody = append(secondBody, []byte("\n## Work log\n\n- first\n\n## Work log\n\n- second\n")...)
+	if _, err := e.st.ReplaceTask(second, secondBody, TaskMaxBytes); err != nil {
+		t.Fatalf("seed duplicate Work log: %v", err)
+	}
+	firstPath := filepath.Join(e.base, "tickets", first, "TASK.md")
+	firstBefore, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CloseMany(e.st, []string{first, second}, CloseOptions{Message: stringPtr("close batch")}); err == nil || contractCode(t, err) != contract.ErrInvalidTicket {
+		t.Fatalf("duplicate Work log accepted: %v", err)
+	}
+	firstAfter, err := os.ReadFile(firstPath)
+	if err != nil || !bytes.Equal(firstBefore, firstAfter) {
+		t.Fatalf("Work log error changed earlier target: %v", err)
+	}
+}

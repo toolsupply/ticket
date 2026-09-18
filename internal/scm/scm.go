@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"ticket/internal/contract"
@@ -30,24 +31,43 @@ type backend struct {
 // Configure selects the optional SCM backend from the process environment.
 // An unset or "none" backend disables all SCM commands.
 func Configure() (Backend, error) {
-	kind := strings.TrimSpace(os.Getenv("TICKET_SCM"))
+	return ConfigureValues(os.Getenv("TICKET_SCM"), os.Getenv("TICKET_SCM_MODE"))
+}
+
+// ConfigureValues selects an SCM backend from already-resolved settings.
+// Keeping environment lookup in Configure preserves the existing direct API
+// while scoped CLI invocations can supply their effective values explicitly.
+func ConfigureValues(kindValue, modeValue string) (Backend, error) {
+	kind := strings.TrimSpace(kindValue)
+	if err := ValidateValues(kindValue, modeValue); err != nil {
+		return nil, err
+	}
 	if kind == "" || kind == "none" {
 		return nil, nil
-	}
-	if kind != "git" && kind != "svn" {
-		return nil, contract.NewError(contract.ErrInvalidArgument,
-			"Unsupported TICKET_SCM "+kind+"; use none, git, or svn.", nil)
-	}
-	mode := strings.TrimSpace(os.Getenv("TICKET_SCM_MODE"))
-	if mode != "sync" {
-		return nil, contract.NewError(contract.ErrInvalidArgument,
-			"Unsupported TICKET_SCM_MODE; use sync.", nil)
 	}
 	if _, err := exec.LookPath(kind); err != nil {
 		return nil, contract.NewError(contract.ErrIOError,
 			"Configured SCM executable "+kind+" was not found.", nil)
 	}
 	return &backend{kind: kind, run: execCommand}, nil
+}
+
+// ValidateValues checks SCM settings without looking up the executable. It is
+// used while loading user scopes so unused scopes remain portable.
+func ValidateValues(kindValue, modeValue string) error {
+	kind := strings.TrimSpace(kindValue)
+	if kind == "" || kind == "none" {
+		return nil
+	}
+	if kind != "git" && kind != "svn" {
+		return contract.NewError(contract.ErrInvalidArgument,
+			"Unsupported TICKET_SCM "+kind+"; use none, git, or svn.", nil)
+	}
+	if strings.TrimSpace(modeValue) != "sync" {
+		return contract.NewError(contract.ErrInvalidArgument,
+			"Unsupported TICKET_SCM_MODE; use sync.", nil)
+	}
+	return nil
 }
 
 func newBackend(kind string, run commandRunner) Backend {
@@ -99,10 +119,14 @@ func (b *backend) Commit(root, message string, paths []string) error {
 		args = append(args, gitScopedPaths(paths)...)
 		return b.command(root, "git commit", args...)
 	case "svn":
+		deleted, err := b.svnDeleteMissing(root, paths)
+		if err != nil {
+			return err
+		}
 		if err := b.svnAdd(root, paths); err != nil {
 			return err
 		}
-		scoped, err := svnScopedPaths(root, paths)
+		scoped, err := svnScopedPaths(root, paths, deleted)
 		if err != nil {
 			return err
 		}
@@ -148,21 +172,31 @@ func (b *backend) svnPending(root string, paths []string) (bool, error) {
 }
 
 func gitScopedPaths(paths []string) []string {
-	result := append([]string(nil), paths...)
+	rootScoped := false
 	for _, path := range paths {
 		if path == "." {
-			result = append(result, ":(exclude).local")
+			rootScoped = true
+			break
 		}
 	}
+	if rootScoped {
+		return []string{".", ":(exclude).local"}
+	}
+	result := append([]string(nil), paths...)
 	return result
 }
 
 func (b *backend) svnAdd(root string, paths []string) error {
-	scoped, err := svnScopedPaths(root, paths)
+	scoped, err := svnScopedPaths(root, paths, nil)
 	if err != nil {
 		return err
 	}
 	for _, path := range scoped {
+		if _, err := os.Lstat(filepath.Join(root, path)); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return contract.NewError(contract.ErrIOError, "Cannot inspect SVN path: "+err.Error(), nil)
+		}
 		if err := b.command(root, "svn add", "add", "--force", "--depth", "infinity", path); err != nil {
 			return err
 		}
@@ -170,14 +204,71 @@ func (b *backend) svnAdd(root string, paths []string) error {
 	return nil
 }
 
-func svnScopedPaths(root string, paths []string) ([]string, error) {
-	if len(paths) != 1 || paths[0] != "." {
-		result := make([]string, 0, len(paths))
-		for _, path := range paths {
-			if path != ".local" && path != ".git" && path != ".svn" {
-				result = append(result, path)
+func (b *backend) svnDeleteMissing(root string, paths []string) ([]string, error) {
+	var deleted []string
+	for _, path := range paths {
+		if path == "." || path == ".local" || path == ".git" || path == ".svn" {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(root, path)); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, contract.NewError(contract.ErrIOError, "Cannot inspect SVN deletion path: "+err.Error(), nil)
+		}
+		output, err := b.run(root, b.kind, "status", "--quiet", path)
+		if err != nil {
+			return nil, b.failure("svn status", output, err)
+		}
+		status := svnDeletionStatus(output)
+		if status == "" {
+			continue
+		}
+		if status == "missing" {
+			if err := b.command(root, "svn delete", "delete", "--force", path); err != nil {
+				return nil, err
 			}
 		}
+		deleted = append(deleted, path)
+	}
+	return deleted, nil
+}
+
+func svnDeletionStatus(output []byte) string {
+	for _, line := range strings.Split(string(output), "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		switch line[0] {
+		case '!':
+			return "missing"
+		case 'D':
+			return "scheduled"
+		}
+	}
+	return ""
+}
+
+func svnScopedPaths(root string, paths, deleted []string) ([]string, error) {
+	rootScoped := false
+	for _, path := range paths {
+		if path == "." {
+			rootScoped = true
+			break
+		}
+	}
+	if !rootScoped {
+		result := make([]string, 0, len(paths)+len(deleted))
+		for _, path := range paths {
+			if path == ".local" || path == ".git" || path == ".svn" {
+				continue
+			}
+			if _, err := os.Lstat(filepath.Join(root, path)); err == nil {
+				result = append(result, path)
+			} else if !os.IsNotExist(err) {
+				return nil, contract.NewError(contract.ErrIOError, "Cannot inspect SCM path: "+err.Error(), nil)
+			}
+		}
+		result = appendMissingPaths(result, deleted)
 		return result, nil
 	}
 	entries, err := os.ReadDir(root)
@@ -193,7 +284,31 @@ func svnScopedPaths(root string, paths []string) ([]string, error) {
 			result = append(result, entry.Name())
 		}
 	}
+	seen := make(map[string]bool, len(result))
+	for _, path := range result {
+		seen[path] = true
+	}
+	for _, path := range deleted {
+		if path != "." && path != ".local" && path != ".git" && path != ".svn" && !seen[path] {
+			result = append(result, path)
+			seen[path] = true
+		}
+	}
 	return result, nil
+}
+
+func appendMissingPaths(paths, additions []string) []string {
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		seen[path] = true
+	}
+	for _, path := range additions {
+		if !seen[path] {
+			paths = append(paths, path)
+			seen[path] = true
+		}
+	}
+	return paths
 }
 
 func (b *backend) Publish(root string) error {

@@ -16,7 +16,7 @@ Usage:
   ticket <command> [options]
 
 Getting started:
-  init       Initialize ./tickets (or TICKET_ROOT)
+  init       Initialize ./tickets, TICKET_REPOSITORY, or the selected scope repository
   create     Create a ticket
 
   Finding work:
@@ -52,11 +52,17 @@ Maintenance:
 
 Run 'ticket help <command>' or 'ticket <command> -h' for command-specific help.
 
+Global options:
+  -c, --config FILE  Use an alternate user config file.
+      --scope NAME   Use a named configuration scope.
+
 `
 
 func globalHelpOptions() []contract.Flag {
 	return []contract.Flag{
 		{Name: "--actor", Kind: "token", Description: "Actor identity override; takes precedence over TICKET_ACTOR."},
+		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
+		{Name: "--scope", Kind: "name", Description: "Use a named configuration scope."},
 		{Name: "-j, --json", Kind: "bool", Description: "Use compact JSON output for success and errors."},
 		{Name: "-h, --help", Kind: "bool", Description: "Show help for this command."},
 	}
@@ -123,7 +129,7 @@ func emitHelpCommand(ctx *commandContext, name string) error {
 		if command.Name == "create" || command.Name == "edit" {
 			fmt.Fprintln(ctx.stdout)
 			fmt.Fprintln(ctx.stdout, "Editor:")
-			fmt.Fprintln(ctx.stdout, "  TICKET_EDITOR, then VISUAL, then EDITOR.")
+			fmt.Fprintln(ctx.stdout, "  TICKET_EDITOR, config.editor, VISUAL, EDITOR, then the platform default.")
 			fmt.Fprintln(ctx.stdout, "  Defaults to vi on Unix and notepad.exe on Windows.")
 		}
 		fmt.Fprintln(ctx.stdout)

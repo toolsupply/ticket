@@ -132,6 +132,96 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestInteractiveEditRequiresOwnershipBeforeEditor(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Owned edit", "Keep edit ownership enforced."))["id"].(string)
+	mustCLI(t, "claim", id, "--actor", "alice")
+	path := filepath.Join(dir, "tickets", id, "TASK.md")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-block")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TICKET_ACTOR", "bob")
+	if stdout, stderr, code := runCLIHumanError(t, "edit", id); code != 4 || stdout != "" || !strings.Contains(stderr, "assigned to another actor") {
+		t.Fatalf("different-owner edit: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if fileExists(filepath.Join(dir, "editor-started")) {
+		t.Fatal("editor started for a ticket owned by another actor")
+	}
+	t.Setenv("TICKET_ACTOR", "")
+	if stdout, stderr, code := runCLIHumanError(t, "edit", id); code != 2 || stdout != "" || !strings.Contains(stderr, "actor is required") {
+		t.Fatalf("no-actor edit: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("rejected edits changed TASK.md")
+	}
+}
+
+func TestInteractiveEditRechecksOwnershipBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Ownership race", "Keep the newer owner safe."))["id"].(string)
+	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited draft must not publish.\n")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TICKET_ACTOR", "worker")
+	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}}
+	result := make(chan error, 1)
+	go func() { result <- editWithEditor(ctx, id) }()
+	waitForFile(t, started)
+
+	st, err := store.Open(dir, store.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := domain.Claim(st, id, domain.ClaimOptions{Actor: "other"}); err != nil {
+		st.Close()
+		t.Fatalf("concurrent claim: %v", err)
+	}
+	st.Close()
+	releaseEditor(t, release)
+	err = <-result
+	var ce *contract.Error
+	if !errors.As(err, &ce) || ce.Code != contract.ErrAlreadyClaimed {
+		t.Fatalf("ownership race error=%v", err)
+	}
+	if !strings.Contains(ce.Message, "Edited draft preserved at:") {
+		t.Fatalf("ownership race did not preserve draft: %v", ce)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	body := view["body"].(string)
+	if view["assignee"] != "other" || strings.Contains(body, "Edited draft must not publish.") {
+		t.Fatalf("ownership race changed newer ticket: %v", view)
+	}
+}
+
+func TestInteractiveEditAllowsAssignedActor(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Owned edit allowed", "Allow the assigned actor to edit."))["id"].(string)
+	mustCLI(t, "claim", id, "--actor", "worker")
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-append")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TEST_EDITOR_BODY", "\n## Handoff\nEdited by owner.\n")
+	t.Setenv("TICKET_ACTOR", "worker")
+	if out, code := runCLIHuman(t, "edit", id); code != 0 || !strings.Contains(out, "edited "+id) {
+		t.Fatalf("assigned-owner edit: exit=%d out=%q", code, out)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if !strings.Contains(view["body"].(string), "Edited by owner.") {
+		t.Fatalf("assigned-owner edit was not published: %v", view)
+	}
+}
+
 func TestInteractiveNewIsInvisibleUntilPublication(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

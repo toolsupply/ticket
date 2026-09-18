@@ -79,6 +79,62 @@ func TestInitNonEmptyFails(t *testing.T) {
 	}
 }
 
+func TestInitResumesExactPartialFiles(t *testing.T) {
+	partialGitignore := t.TempDir()
+	if err := os.Mkdir(filepath.Join(partialGitignore, ".local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partialGitignore, ".gitignore"), []byte(".local/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := InitRoot(partialGitignore); err != nil || !created {
+		t.Fatalf("resume with gitignore: created=%v err=%v", created, err)
+	}
+	if _, err := LoadConfig(partialGitignore); err != nil {
+		t.Fatalf("resumed repository config: %v", err)
+	}
+
+	partialBoth := t.TempDir()
+	if err := os.WriteFile(filepath.Join(partialBoth, ".gitignore"), []byte(".local/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partialBoth, "README.md"), initREADME(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := InitRoot(partialBoth); err != nil || !created {
+		t.Fatalf("resume with both files: created=%v err=%v", created, err)
+	}
+	if _, err := LoadConfig(partialBoth); err != nil {
+		t.Fatalf("resumed repository config: %v", err)
+	}
+}
+
+func TestInitRejectsModifiedPartialFiles(t *testing.T) {
+	for _, name := range []string{".gitignore", "README.md"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, ".local"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			contents := []byte("modified\n")
+			if err := os.WriteFile(filepath.Join(dir, name), contents, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InitRoot(dir); err == nil {
+				t.Fatal("modified partial file was adopted")
+			} else {
+				var ce *contract.Error
+				if !asContract(err, &ce) || ce.Code != contract.ErrInvalidRepository {
+					t.Fatalf("wrong error: %v", err)
+				}
+			}
+			if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != string(contents) {
+				t.Fatalf("modified partial file changed: %q (%v)", got, err)
+			}
+		})
+	}
+}
+
 func asContract(err error, ce **contract.Error) bool {
 	return errors.As(err, ce)
 }
@@ -138,6 +194,27 @@ func TestDiscoverExplicitTicketRoot(t *testing.T) {
 	}
 	if got != moduleRoot {
 		t.Fatalf("discovered %q want %q", got, moduleRoot)
+	}
+}
+
+func TestDiscoverRepositoryEnvironmentPrecedesLegacyRoot(t *testing.T) {
+	base := t.TempDir()
+	newRoot := filepath.Join(base, "repository")
+	legacyRoot := filepath.Join(base, "legacy")
+	if _, err := InitRoot(newRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitRoot(legacyRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TICKET_REPOSITORY", newRoot)
+	t.Setenv("TICKET_ROOT", legacyRoot)
+	got, err := Discover(base)
+	if err != nil {
+		t.Fatalf("discover repository environment: %v", err)
+	}
+	if got != newRoot {
+		t.Fatalf("discovered %q want %q", got, newRoot)
 	}
 }
 

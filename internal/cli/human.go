@@ -15,11 +15,15 @@ import (
 )
 
 // renderHumanTo writes compact human output for a successful command result.
-func renderHumanTo(stdout *bytes.Buffer, cmd string, res any, markdown bool) error {
+func renderHumanTo(stdout *bytes.Buffer, cmd string, res any, markdown bool, decorators ...string) error {
 	if markdown {
 		return renderMarkdownTo(stdout, cmd, res)
 	}
-	if decorator := os.Getenv("TICKET_DECORATOR"); decorator != "" && decorator != "none" && decoratorCommand(cmd) {
+	decorator := os.Getenv("TICKET_DECORATOR")
+	if len(decorators) > 0 {
+		decorator = decorators[0]
+	}
+	if decorator != "" && decorator != "none" && decoratorCommand(cmd) {
 		var rendered bytes.Buffer
 		if err := renderMarkdownTo(&rendered, cmd, res); err != nil {
 			return err

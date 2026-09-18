@@ -76,14 +76,6 @@ $skill-installer install https://github.com/toolsupply/ticket/tree/main/skills/t
 
 For other harnesses, download [ticket-tasks.zip](https://github.com/toolsupply/ticket/releases/latest/download/ticket-tasks.zip) and extract the `ticket-tasks` directory into the harness's skill directory.
 
-Manual installation - adapt for your harness of choice:
-
-```sh
-skill_root="${CODEX_HOME:-$HOME/.codex}/skills"
-mkdir -p "$skill_root"
-cp -R skills/ticket-tasks "$skill_root/ticket-tasks"
-```
-
 The skill teaches agents to discover, claim, update, and submit tickets while preserving the repository's ticket safety rules.
 
 ## Quick start
@@ -134,7 +126,7 @@ The submit and review lifecycle states are optional; tickets can be closed or re
 ## How it works
 
 `ticket` uses the local filesystem as its database. Tickets are Markdown files that can live directly alongside the source code they describe.
-Concurrent access and atomic operations are managed by one local lock for the ticket root.
+Concurrent access and atomic operations are managed by one local lock for the ticket repository.
 
 The CLI manages ticket state, ownership, dependencies, parent/child relationships, work selection, and optional source-control synchronization.
 
@@ -176,9 +168,12 @@ hold ─open─> open ─submit─> review ─approve─> signoff ─close─> c
 
 | Variable | Purpose |
 |---|---|
-| `TICKET_ROOT` | Explicit ticket repository path. Relative paths are resolved from the current working directory. |
+| `TICKET_REPOSITORY` | Ticket repository path. Relative paths are resolved from the current working directory. |
 | `TICKET_ACTOR` | Actor identity used when claiming and working tickets. |
-| `TICKET_EDITOR` | Editor command for interactive create/edit operations; falls back to `VISUAL`, `EDITOR`, then the platform default. |
+| `TICKET_SCOPE` | Named user configuration scope. |
+| `TICKET_CREATE_TAGS` | Comma-separated tags added to newly created tickets. Explicit `--tag` values are additive. |
+| `TICKET_WORK_TAGS` | Comma-separated tags required by `next` and `wait`; explicit `--tag` values are additive. |
+| `TICKET_EDITOR` | Editor command for interactive create/edit operations; falls back to `config.editor`, `VISUAL`, `EDITOR`, then the platform default. |
 | `TICKET_CURRENT` | Override the current ticket used by interactive single-ticket commands. |
 | `TICKET_DECORATOR` | Executable used to render Markdown output for interactive use. |
 | `TICKET_SCM` | Source-control backend: `none`, `git`, or `svn`. |
@@ -188,6 +183,37 @@ For example, configure an editor that waits for completion:
 
 ```sh
 export TICKET_EDITOR="code --wait"
+```
+
+### Configuration file and named scopes
+
+An optional `~/.ticket/config.json` can define named scopes for users who work
+with more than one ticket repository or routing group.
+
+```json
+{
+  "editor": "code --wait",
+  "decorator": "glow",
+  "scopes": {
+    "windows": {
+      "repository": "/work/project/tickets",
+      "create_tags": ["windows"],
+      "work_tags": ["windows"]
+    }
+  }
+}
+```
+
+The repository path may be absolute or relative to the directory containing the config
+file. Environment variables and explicit command-line options override scope
+defaults.
+
+Select the scope for a session with `TICKET_SCOPE`, or for one command with `--scope`:
+
+```sh
+export TICKET_SCOPE=windows
+export TICKET_ACTOR=coder-01
+ticket next --claim
 ```
 
 ## Monitoring work
@@ -202,19 +228,13 @@ Ticket state remains available independently of any particular agent session, so
 
 ## Selecting work
 
-Select the next ticket available for implementation:
-
-```sh
-ticket next
-```
-
-To select and claim the next ticket:
+To select the next ticket available for implementation and claim it:
 
 ```sh
 ticket next --claim
 ```
 
-Implementation selection considers current actor, ticket state, ownership, dependencies, child
+Selection logic considers current actor, ticket state, ownership, dependencies, child
 work, and any supplied filters such as tags. Blocked or otherwise ineligible
 tickets are skipped.
 
@@ -282,7 +302,7 @@ or return it to open with concrete review findings
 
 Implementation workers stop at review. Reviewers stop at signoff. Final acceptance remains a human lifecycle action.
 
-### Project-level agent policy
+### Agent instructions
 
 The bundled `ticket-tasks` Skill defines how agents interact with the ticket system. Individual repositories can add project-specific guidance, for example in `AGENTS.md`, to decide what kinds of work should become persistent tickets.
 
@@ -369,13 +389,13 @@ export TICKET_SCM_MODE=sync
 
 With Git synchronization enabled, `ticket` updates before reading and commits and pushes ticket mutations using the current branch and its configured upstream.
 
-`ticket` never creates or switches branches or worktrees. It uses the checkout containing `TICKET_ROOT` exactly as configured.
+`ticket` never creates or switches branches or worktrees. It uses the checkout containing `TICKET_REPOSITORY` exactly as configured.
 
 ### Sparse ticket worktree
 
 For concurrent coding and review agents, a dedicated sparse worktree can be used for the ticket repository.
 
-All workers coordinate through the same authoritative ticket root. The local ticket-root lock serializes cooperating operations; Git handles update and publication.
+All workers coordinate through the same authoritative ticket repository. The repository lock serializes cooperating operations; Git handles update and publication.
 
 Create a ticket worktree:
 
@@ -393,7 +413,7 @@ git push -u origin ticket-state
 Configure `ticket` to use it:
 
 ```sh
-export TICKET_ROOT="$PWD/tickets"
+export TICKET_REPOSITORY="$PWD/tickets"
 export TICKET_SCM=git
 export TICKET_SCM_MODE=sync
 ```
@@ -405,7 +425,7 @@ The ticket-state branch acts as the coordination branch for ticket state; coding
 For simpler setups, a separate worktree is not required:
 
 ```sh
-export TICKET_ROOT="$PWD/tickets"
+export TICKET_REPOSITORY="$PWD/tickets"
 export TICKET_SCM=git
 export TICKET_SCM_MODE=sync
 ```

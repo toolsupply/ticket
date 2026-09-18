@@ -40,9 +40,12 @@ func cmdInit(ctx *commandContext, args []string) error {
 	var target string
 	if len(p.positionals) > 0 {
 		return contract.NewError(contract.ErrInvalidArgument,
-			"Command init accepts no path; it initializes ./tickets.", nil)
+			"Command init accepts no path; use TICKET_REPOSITORY or a selected scope to choose the target.", nil)
 	}
-	target = os.Getenv("TICKET_ROOT")
+	target = store.ConfiguredRoot()
+	if target == "" {
+		target = ctx.globalOpts.selectedRoot()
+	}
 	if target == "" {
 		target = "./tickets"
 	}
@@ -180,6 +183,7 @@ func cmdCreate(ctx *commandContext, args []string) error {
 		}
 		opts.Body = body
 	}
+	opts.Tags = ctx.createTags(opts.Tags)
 	if opts.Title == "" && edit {
 		opts.Title = "New ticket"
 	}
@@ -547,6 +551,7 @@ func cmdReady(ctx *commandContext, args []string) error {
 	if err := p.requireNoPositionals("ready"); err != nil {
 		return err
 	}
+	tags = ctx.workTags(tags)
 	opts := domain.ListOptions{Tags: tags, WithoutTags: withoutTags, Parent: parent}
 	if hasLimit {
 		opts.Limit = limit
@@ -587,6 +592,7 @@ func cmdNext(ctx *commandContext, args []string) error {
 	if err := ctx.check(); err != nil {
 		return err
 	}
+	tags = ctx.workTags(tags)
 	queue, err := workQueue(p.positionals, "next")
 	if err != nil {
 		return err
@@ -722,9 +728,11 @@ func cmdOpen(ctx *commandContext, args []string) error {
 	var handoffSet bool
 	var message string
 	var messageSet bool
+	var claim bool
 	p.flag("handoff", kindString, func(value string) error { handoff, handoffSet = value, true; return nil }, false)
 	p.flag("message", kindString, func(value string) error { message, messageSet = value, true; return nil }, false)
 	p.alias("m", "message")
+	p.boolValue("claim", &claim)
 	if err := p.parse(args); err != nil {
 		return err
 	}
@@ -733,6 +741,17 @@ func cmdOpen(ctx *commandContext, args []string) error {
 	}
 	if err := ctx.check(); err != nil {
 		return err
+	}
+	actor := ctx.actor
+	if actor == "" {
+		actor = os.Getenv("TICKET_ACTOR")
+	}
+	if claim {
+		var err error
+		actor, err = ctx.actorToken()
+		if err != nil {
+			return err
+		}
 	}
 	if len(p.positionals) > 2 {
 		return contract.NewError(contract.ErrInvalidArgument,
@@ -772,11 +791,7 @@ func cmdOpen(ctx *commandContext, args []string) error {
 		if messageSet {
 			messagePtr = &message
 		}
-		actor := ctx.actor
-		if actor == "" {
-			actor = os.Getenv("TICKET_ACTOR")
-		}
-		return domain.Open(st, ref, domain.OpenOptions{Handoff: handoffPtr, Actor: actor, Message: messagePtr})
+		return domain.Open(st, ref, domain.OpenOptions{Handoff: handoffPtr, Actor: actor, Message: messagePtr, Claim: claim})
 	})
 }
 
@@ -833,8 +848,16 @@ func cmdWorkflowMove(ctx *commandContext, args []string, command string, run fun
 	})
 }
 
-func selectedEditor() string {
-	for _, name := range []string{"TICKET_EDITOR", "VISUAL", "EDITOR"} {
+func selectedEditor(configs ...*globalOpts) string {
+	if value := strings.TrimSpace(os.Getenv("TICKET_EDITOR")); value != "" {
+		return value
+	}
+	if len(configs) > 0 && configs[0] != nil {
+		if value := strings.TrimSpace(configs[0].config.Editor); value != "" {
+			return value
+		}
+	}
+	for _, name := range []string{"VISUAL", "EDITOR"} {
 		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 			return value
 		}
