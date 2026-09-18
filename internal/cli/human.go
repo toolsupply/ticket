@@ -35,6 +35,8 @@ func renderHumanTo(stdout *bytes.Buffer, cmd string, res any, markdown bool, dec
 
 func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 	switch r := res.(type) {
+	case *currentTicketSummary:
+		fmt.Fprintf(stdout, "%s  %s  %s\n", r.ID, r.State, r.Title)
 	case *domain.CreateResult:
 		fmt.Fprintf(stdout, "created %s %s\n", r.ID, r.Path)
 		if r.State != "" {
@@ -159,21 +161,27 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 			fmt.Fprintf(stdout, "already released %s\n", r.ID)
 		}
 	case *domain.TransitionResult:
-		if r.Changed {
-			fmt.Fprintf(stdout, "%s %s\n", strings.ToLower(r.State), r.ID)
-		} else {
-			fmt.Fprintf(stdout, "%s unchanged\n", r.ID)
-		}
+		renderTransition(stdout, r)
 	case *domain.BatchTransitionResult:
-		verb := cmd
-		if cmd == "close" {
-			verb = "closed"
+		for i := range r.Items {
+			renderTransition(stdout, &r.Items[i])
 		}
-		fmt.Fprintf(stdout, "%s %d tickets\n", verb, len(r.Items))
 	default:
 		fmt.Fprintf(stdout, "ok (%s)\n", cmd)
 	}
 	return nil
+}
+
+func renderTransition(stdout *bytes.Buffer, r *domain.TransitionResult) {
+	if !r.Changed {
+		fmt.Fprintf(stdout, "%s: %s unchanged\n", r.ID, r.State)
+		return
+	}
+	fmt.Fprintf(stdout, "%s: %s -> %s", r.ID, r.FromState, r.State)
+	if r.Assignee != "" {
+		fmt.Fprintf(stdout, ", claimed by %s", r.Assignee)
+	}
+	fmt.Fprintln(stdout)
 }
 
 func truncateHuman(s string, width int) string {

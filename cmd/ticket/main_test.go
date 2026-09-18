@@ -108,7 +108,19 @@ func TestUnknownCommand(t *testing.T) {
 
 func TestNoArgumentsShowsHelp(t *testing.T) {
 	bin := buildCLI(t)
-	stdout, exit := runCLI(t, bin)
+	cmd := exec.Command(bin)
+	cmd.Dir = t.TempDir()
+	cmd.Env = os.Environ()
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	err := cmd.Run()
+	exit := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		exit = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run ticket: %v", err)
+	}
+	stdout := output.String()
 	if exit != 0 {
 		t.Fatalf("exit = %d, stdout %q", exit, stdout)
 	}

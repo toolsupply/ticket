@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"ticket/internal/contract"
 	"ticket/internal/domain"
 )
 
@@ -238,7 +239,28 @@ func TestBareTicketIDUsesShowCommand(t *testing.T) {
 	}
 }
 
+func TestBareTicketShowsAuthoritativeCurrentSummary(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TICKET_CURRENT", "")
+	t.Setenv("TICKET_REPOSITORY", "")
+	t.Setenv("TICKET_ROOT", "")
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Current summary", "Show current context."))["id"].(string)
+	if out, code := runCLIHuman(t); code != 0 || out != id+"  open  Current summary\n" {
+		t.Fatalf("bare current summary: exit=%d out=%q", code, out)
+	}
+	mustCLI(t, "state", id, "rejected")
+	if out, code := runCLIHuman(t); code != 0 || out != id+"  rejected  Current summary\n" {
+		t.Fatalf("authoritative bare current summary: exit=%d out=%q", code, out)
+	}
+}
+
 func TestTopLevelHelpAndVersionAliases(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("TICKET_CURRENT", "")
+	t.Setenv("TICKET_REPOSITORY", "")
+	t.Setenv("TICKET_ROOT", "")
 	for _, args := range [][]string{{}, {"--help"}, {"-h"}} {
 		out, code := runCLIHuman(t, args...)
 		if code != 0 {
@@ -298,6 +320,10 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 }
 
 func TestHelp(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("TICKET_CURRENT", "")
+	t.Setenv("TICKET_REPOSITORY", "")
+	t.Setenv("TICKET_ROOT", "")
 	if out, code := runCLIHuman(t, "help"); code != 0 || out != topLevelHelp {
 		t.Fatalf("human help: exit=%d out=%q", code, out)
 	}
@@ -345,7 +371,7 @@ func TestHelp(t *testing.T) {
 func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 	for _, command := range []string{
 		"create", "delete", "bump", "list", "grep", "show", "edit", "submit",
-		"hold", "open", "status", "path", "update", "claim", "release", "actor",
+		"hold", "review", "open", "status", "path", "update", "claim", "release", "actor",
 		"close", "approve", "reject", "help",
 	} {
 		out, code := runCLIHuman(t, "help", command)
@@ -383,6 +409,33 @@ func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Fatalf("%s usage: exit=%d want=%q out=%q", command, code, want, out)
 		}
+	}
+}
+
+func TestGlobalOptionsHelpAndDebugPlacement(t *testing.T) {
+	t.Chdir(t.TempDir())
+	out, code := runCLIHuman(t, "help", "options")
+	if code != 0 {
+		t.Fatalf("options help: exit=%d out=%q", code, out)
+	}
+	for _, want := range []string{"-c, --config", "--scope", "-j, --json", "-h, --help", "--debug", "stack trace"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("options help missing %q: %q", want, out)
+		}
+	}
+	jsonOut, code := runCLI(t, "help", "options")
+	if code != 0 {
+		t.Fatalf("JSON options help: exit=%d out=%q", code, jsonOut)
+	}
+	options := exactlyOneJSONObject(t, jsonOut)
+	if options["command"] != "options" {
+		t.Fatalf("JSON options help command: %v", options)
+	}
+	if _, code := runCLIHuman(t, "--debug", "help", "options"); code != 0 {
+		t.Fatalf("leading --debug was not accepted")
+	}
+	if _, code := runCLIHuman(t, "help", "options", "--debug"); code != 0 {
+		t.Fatalf("command-local --debug was not accepted")
 	}
 }
 
@@ -720,6 +773,51 @@ func TestSCMFailureAfterCreateReportsAppliedMutation(t *testing.T) {
 	}
 }
 
+func TestInteractiveCreateSCMFailureReportsCreatedTicket(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	mode := "scm-push-retry-editor-write"
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), mode)
+	installFakeSCM(t, filepath.Join(dir, "bin"), mode)
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TEST_EDITOR_BODY", "---\nstate: hold\npriority: 2\n---\n# Interactive persisted\n\n## Objective\n\nKeep the created ticket visible after SCM failure.\n")
+	t.Setenv("SCM_LOG", filepath.Join(dir, "scm.log"))
+	t.Setenv("SCM_STATE", filepath.Join(dir, "scm-committed"))
+	t.Setenv("FAIL_PUSH", "1")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	t.Setenv("TICKET_CURRENT", "external-current")
+
+	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}}
+	err := createWithEditor(ctx, domain.CreateOptions{Title: "Interactive persisted", Priority: 2})
+	ce, ok := err.(*contract.Error)
+	if !ok || ce.Code != contract.ErrIOError {
+		t.Fatalf("interactive SCM failure: %v", err)
+	}
+	if strings.Contains(ce.Message, "No ticket was created") || !strings.Contains(ce.Message, "Reconcile SCM persistence") {
+		t.Fatalf("interactive SCM failure message: %q", ce.Message)
+	}
+	if ce.Details["mutation_applied"] != true {
+		t.Fatalf("interactive SCM failure details: %v", ce.Details)
+	}
+	id, ok := ce.Details["id"].(string)
+	if !ok || id == "" {
+		t.Fatalf("interactive SCM failure ID: %v", ce.Details)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tickets", id, "TASK.md")); err != nil {
+		t.Fatalf("created ticket was not preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tickets", ".local", "current")); !os.IsNotExist(err) {
+		t.Fatalf("local current marker after SCM failure: %v", err)
+	}
+	if !strings.Contains(ce.Message, "TICKET_CURRENT still selects external-current") {
+		t.Fatalf("SCM failure lost environment-current diagnostic: %q", ce.Message)
+	}
+}
+
 func TestSCMFailureAfterSubmitReportsAppliedMutation(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -992,6 +1090,34 @@ func TestEditorValidationAbortRestoresOriginal(t *testing.T) {
 	items := list["items"].([]any)
 	if len(items) != 0 || !strings.Contains(stderr, "Edited draft preserved at:") {
 		t.Fatalf("aborted create list: %v", list)
+	}
+}
+
+func TestFailedInteractiveCreateClearsCurrentTicket(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	previous := exactlyOneJSONObject(t, mustCLI(t, "create", "Previous current", "Keep the pointer testable."))["id"].(string)
+	invalid := "---\nstate: hold\npriority: 2\n---\n# Broken title\n\n# Accidental heading\n"
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-write")
+	t.Setenv("TEST_EDITOR_BODY", invalid)
+	t.Setenv("EDITOR", editor)
+	_, stderr, code := runCLIHumanStdin(t, "n\n", "new", "Abort this edit", "-e")
+	if code == 0 || !strings.Contains(stderr, "No ticket was created. Current ticket is unset.") {
+		t.Fatalf("aborted create did not report cleared current: exit=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tickets", ".local", "current")); !os.IsNotExist(err) {
+		t.Fatalf("current marker survived aborted create: %v", err)
+	}
+	if _, code := runCLIHuman(t, "status"); code == 0 {
+		t.Fatalf("aborted create left a usable current ticket: id=%s exit=%d", previous, code)
+	}
+
+	t.Setenv("EDITOR", installTestHelper(t, filepath.Join(dir, "failing-editor"), "editor-fail"))
+	t.Setenv("TEST_EDITOR_BODY", "")
+	_, stderr, code = runCLIHumanError(t, "new", "Failed editor", "-e")
+	if code == 0 || !strings.Contains(stderr, "No ticket was created. Current ticket is unset.") {
+		t.Fatalf("failed editor did not report cleared current: exit=%d stderr=%q", code, stderr)
 	}
 }
 

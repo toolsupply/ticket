@@ -11,20 +11,22 @@ func TestHumanCloseAllUsesPastTense(t *testing.T) {
 	if out, code := runCLI(t, "init"); code != 0 {
 		t.Fatalf("init: exit=%d out=%q", code, out)
 	}
+	var ids []string
 	for _, title := range []string{"first", "second"} {
-		if out, code := runCLI(t, "create", title); code != 0 {
+		out, code := runCLI(t, "create", title)
+		if code != 0 {
 			t.Fatalf("create %q: exit=%d out=%q", title, code, out)
 		}
+		ids = append(ids, exactlyOneJSONObject(t, out)["id"].(string))
 	}
 
 	out, code := runCLIHuman(t, "close", "all")
 	if code != 0 {
 		t.Fatalf("close all: exit=%d out=%q", code, out)
 	}
-	if out != "closed 2 tickets\n" {
-		t.Fatalf("close all output: %q", out)
-	}
-	if strings.Contains(out, "close 2 tickets") {
-		t.Fatalf("close all used the command name: %q", out)
+	for _, id := range ids {
+		if !strings.Contains(out, id+": hold -> completed") {
+			t.Fatalf("close all transition output: %q", out)
+		}
 	}
 }

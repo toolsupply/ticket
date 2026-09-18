@@ -23,6 +23,23 @@ func (st *Store) RememberCurrent(id string) error {
 	return writeLocalFile(filepath.Join(st.Root, ".local", "current"), []byte(id+"\n"))
 }
 
+// ClearCurrent removes the advisory current-ticket marker without following
+// links or touching any other local state.
+func (st *Store) ClearCurrent() error {
+	path := filepath.Join(st.Root, ".local", "current")
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("local destination is not a regular file")
+	}
+	return os.Remove(path)
+}
+
 func writeLocalFile(path string, data []byte) error {
 	info, err := os.Lstat(path)
 	exists := err == nil

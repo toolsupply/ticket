@@ -339,7 +339,7 @@ func changedResultID(result any) string {
 
 func mutationCommand(command string) bool {
 	switch command {
-	case "create", "new", "delete", "bump", "edit", "update", "claim", "release", "submit", "hold", "open", "approve", "reject", "close":
+	case "create", "new", "delete", "bump", "edit", "update", "claim", "release", "submit", "hold", "open", "review", "state", "approve", "reject", "close":
 		return true
 	default:
 		return false
@@ -417,6 +417,41 @@ func resolveTicketRef(st *store.Store, ctx *commandContext, ref, command string)
 	}
 	return "", contract.NewError(contract.ErrInvalidArgument,
 		"Command "+command+" requires an ID; no current ticket is set.", nil)
+}
+
+func emitCurrentSummaryOrHelp(ctx *commandContext) error {
+	st, _, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
+	if err != nil {
+		var ce *contract.Error
+		if errors.As(err, &ce) && ce.Code == contract.ErrRepoNotFound {
+			return emitTopLevelHelp(ctx)
+		}
+		return err
+	}
+	defer st.Close()
+	ref := strings.TrimSpace(os.Getenv("TICKET_CURRENT"))
+	if ref == "" {
+		data, readErr := os.ReadFile(filepath.Join(st.Root, ".local", "current"))
+		if readErr == nil {
+			ref = strings.TrimSpace(string(data))
+		} else if !os.IsNotExist(readErr) {
+			return contract.NewError(contract.ErrIOError, "Cannot read current ticket: "+readErr.Error(), nil)
+		}
+	}
+	if ref == "" {
+		return emitTopLevelHelp(ctx)
+	}
+	full, err := st.ResolveID(ref, true)
+	if err != nil {
+		return err
+	}
+	ticket, err := domain.ReadTicket(st, full)
+	if err != nil {
+		return err
+	}
+	return renderHumanTo(ctx.stdout, "current", &currentTicketSummary{
+		ID: ticket.ID, State: ticket.State, Title: ticket.Title,
+	}, false)
 }
 
 func rememberCurrentTicket(st *store.Store, result any) {

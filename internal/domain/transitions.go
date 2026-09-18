@@ -47,11 +47,17 @@ type OpenOptions struct {
 	Claim   bool
 }
 
+type StateOptions struct {
+	Actor   string
+	Message *string
+}
+
 type TransitionResult struct {
-	ID       string `json:"id"`
-	Changed  bool   `json:"changed"`
-	State    string `json:"state"`
-	Assignee string `json:"assignee,omitempty"`
+	ID        string `json:"id"`
+	Changed   bool   `json:"changed"`
+	FromState string `json:"from_state,omitempty"`
+	State     string `json:"state"`
+	Assignee  string `json:"assignee,omitempty"`
 }
 
 type BatchTransitionResult struct {
@@ -63,14 +69,14 @@ type preparedTransition struct {
 	result TransitionResult
 }
 
-func prepareTransition(t *Ticket, newBody []byte, state string) (*preparedTransition, error) {
+func prepareTransition(t *Ticket, newBody []byte, fromState, state string) (*preparedTransition, error) {
 	data, err := renderTransition(t, newBody)
 	if err != nil {
 		return nil, err
 	}
 	return &preparedTransition{
 		data:   data,
-		result: TransitionResult{ID: t.ID, Changed: true, State: state},
+		result: TransitionResult{ID: t.ID, Changed: true, FromState: fromState, State: state},
 	}, nil
 }
 
@@ -108,7 +114,7 @@ func prepareClose(st *store.Store, id string, opts CloseOptions) (*preparedTrans
 		return nil, err
 	}
 	if t.State == "completed" {
-		return &preparedTransition{result: TransitionResult{ID: full, State: "completed"}}, nil
+		return &preparedTransition{result: TransitionResult{ID: full, FromState: "completed", State: "completed"}}, nil
 	}
 	if t.State == "rejected" {
 		return nil, contract.NewError(contract.ErrInvalidTransition, "Rejected tickets cannot be closed.", nil)
@@ -121,9 +127,10 @@ func prepareClose(st *store.Store, id string, opts CloseOptions) (*preparedTrans
 	if err != nil {
 		return nil, err
 	}
+	fromState := t.State
 	t.State = "completed"
 	t.Assignee = ""
-	return prepareTransition(t, newBody, "completed")
+	return prepareTransition(t, newBody, fromState, "completed")
 }
 
 // CloseMany closes the supplied tickets in deterministic ID order. All
@@ -233,13 +240,63 @@ func Reject(st *store.Store, id string, opts RejectOptions) (*TransitionResult, 
 			}
 		}
 	}
+	fromState := t.State
 	t.State = "rejected"
 	t.Assignee = ""
 	newBody, err := transitionBody(t, map[string]string{"outcome": outcome}, opts.Message, opts.Actor)
 	if err != nil {
 		return nil, err
 	}
-	return publishTransition(st, t, newBody, "rejected")
+	return publishTransition(st, t, newBody, fromState, "rejected")
+}
+
+// Review is the human lifecycle correction path. It bypasses ordinary
+// lifecycle legality, but an existing assignment may only be changed by its
+// effective owner.
+func Review(st *store.Store, id string, opts StateOptions) (*TransitionResult, error) {
+	return setState(st, id, "review", opts, true)
+}
+
+// SetState is the explicit administrative correction path. It intentionally
+// bypasses ordinary workflow legality and ownership checks while retaining
+// atomic ticket publication and the normal Work-log handling.
+func SetState(st *store.Store, id, state string, opts StateOptions) (*TransitionResult, error) {
+	return setState(st, id, state, opts, false)
+}
+
+func setState(st *store.Store, id, state string, opts StateOptions, enforceOwnership bool) (*TransitionResult, error) {
+	if !validLifecycleState(state) {
+		return nil, contract.NewError(contract.ErrInvalidArgument,
+			"State must be open, hold, review, signoff, completed, or rejected.", nil)
+	}
+	full, err := mustResolve(st, id)
+	if err != nil {
+		return nil, err
+	}
+	t, err := ReadTicket(st, full)
+	if err != nil {
+		return nil, err
+	}
+	if enforceOwnership && t.Assignee != "" {
+		if err := validateActor(opts.Actor); err != nil {
+			return nil, err
+		}
+		if t.Assignee != opts.Actor {
+			return nil, contract.NewError(contract.ErrAlreadyClaimed,
+				"The ticket is assigned to another actor.", map[string]any{"id": full})
+		}
+	}
+	if t.State == state && t.Assignee == "" && opts.Message == nil {
+		return &TransitionResult{ID: full, Changed: false, FromState: state, State: state}, nil
+	}
+	fromState := t.State
+	t.State = state
+	t.Assignee = ""
+	newBody, err := transitionBody(t, map[string]string{}, opts.Message, opts.Actor)
+	if err != nil {
+		return nil, err
+	}
+	return publishTransition(st, t, newBody, fromState, state)
 }
 
 func Approve(st *store.Store, id string, opts ReviewOptions) (*TransitionResult, error) {
@@ -270,12 +327,13 @@ func prepareApprove(st *store.Store, id string, opts ReviewOptions) (*preparedTr
 			return nil, contract.NewError(contract.ErrAlreadyClaimed, "The ticket is assigned to another actor.", map[string]any{"id": full})
 		}
 	}
+	fromState := t.State
 	t.State, t.Assignee = "signoff", ""
 	newBody, err := transitionBody(t, map[string]string{}, opts.Message, opts.Actor)
 	if err != nil {
 		return nil, err
 	}
-	return prepareTransition(t, newBody, "signoff")
+	return prepareTransition(t, newBody, fromState, "signoff")
 }
 
 // ApproveMany approves supplied review tickets in deterministic ID order.
@@ -383,15 +441,16 @@ func Open(st *store.Store, id string, opts OpenOptions) (*TransitionResult, erro
 		return nil, err
 	}
 	if !opts.Claim && t.State == "open" && t.Assignee == "" && opts.Handoff == nil && opts.Message == nil {
-		return &TransitionResult{ID: full, Changed: false, State: "open"}, nil
+		return &TransitionResult{ID: full, Changed: false, FromState: "open", State: "open"}, nil
 	}
+	fromState := t.State
 	t.State = "open"
 	if opts.Claim {
 		t.Assignee = opts.Actor
 	} else {
 		t.Assignee = ""
 	}
-	result, err := publishTransition(st, t, newBody, "open")
+	result, err := publishTransition(st, t, newBody, fromState, "open")
 	if err != nil {
 		return nil, err
 	}
@@ -440,6 +499,7 @@ func moveAssignedAny(st *store.Store, id, actor string, handoff, message *string
 			return nil, contract.NewError(contract.ErrAlreadyClaimed, "The ticket is assigned to another actor.", map[string]any{"id": full})
 		}
 	}
+	fromState := t.State
 	t.State, t.Assignee = to, ""
 	sections := map[string]string{}
 	if handoff != nil {
@@ -449,7 +509,7 @@ func moveAssignedAny(st *store.Store, id, actor string, handoff, message *string
 	if err != nil {
 		return nil, err
 	}
-	return publishTransition(st, t, newBody, to)
+	return publishTransition(st, t, newBody, fromState, to)
 }
 
 func transitionBody(t *Ticket, sections map[string]string, message *string, actor string) ([]byte, error) {
@@ -468,6 +528,15 @@ func transitionBody(t *Ticket, sections map[string]string, message *string, acto
 		return t.Body, nil
 	}
 	return applyBodyChanges(t, UpdateOptions{Sections: sections, allowWorkLog: true}, map[string]bool{})
+}
+
+func validLifecycleState(state string) bool {
+	switch state {
+	case "open", "hold", "review", "signoff", "completed", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 // uniqueWorkLogSection returns the parsed Work log range. The ordinary ticket
@@ -523,7 +592,7 @@ func workLogContent(t *Ticket, section *markdown.Section, message, actor string)
 	return ValidateSectionContent("work_log", content)
 }
 
-func publishTransition(st *store.Store, t *Ticket, newBody []byte, state string) (*TransitionResult, error) {
+func publishTransition(st *store.Store, t *Ticket, newBody []byte, fromState, state string) (*TransitionResult, error) {
 	changed := map[string]bool{"state": true, "assignee": true}
 	data, err := renderUpdated(t, newBody, changed)
 	if err != nil {
@@ -539,5 +608,5 @@ func publishTransition(st *store.Store, t *Ticket, newBody []byte, state string)
 	if err != nil {
 		return nil, err
 	}
-	return &TransitionResult{ID: t.ID, Changed: true, State: state}, nil
+	return &TransitionResult{ID: t.ID, Changed: true, FromState: fromState, State: state}, nil
 }

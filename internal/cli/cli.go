@@ -130,7 +130,7 @@ func pageWithLess(data []byte) bool {
 func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			debugFlag := len(args) > 0 && scanFlag(args[1:], "--debug")
+			debugFlag := scanFlag(args, "--debug")
 			if debugFlag {
 				os.Stderr.Write(debug.Stack())
 			}
@@ -148,11 +148,18 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 	if err != nil {
 		return err
 	}
+	args, err = normalizeObjectFirst(args)
+	if err != nil {
+		return err
+	}
 	// Per-invocation state: never leak across dispatches.
 	helpFlag = false
 	helpSeen = false
 	ctx := &commandContext{stdout: stdout, cwd: cwd(), globalOpts: g}
 	if len(args) == 0 {
+		if !ctx.json {
+			return emitCurrentSummaryOrHelp(ctx)
+		}
 		return emitTopLevelHelp(ctx)
 	}
 	name := args[0]
@@ -218,6 +225,10 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 		return cmdHold(ctx, rest)
 	case "open":
 		return cmdOpen(ctx, rest)
+	case "review":
+		return cmdReview(ctx, rest)
+	case "state":
+		return cmdState(ctx, rest)
 	case "status":
 		return cmdStatus(ctx, rest)
 	case "path":
@@ -251,11 +262,75 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 	}
 }
 
+var objectFirstCommands = map[string]string{
+	"show":    "show",
+	"edit":    "edit",
+	"status":  "status",
+	"path":    "path",
+	"update":  "update",
+	"claim":   "claim",
+	"release": "release",
+	"submit":  "submit",
+	"hold":    "hold",
+	"open":    "open",
+	"review":  "review",
+	"state":   "state",
+	"close":   "close",
+	"approve": "approve",
+	"accept":  "approve",
+	"reject":  "reject",
+	"bump":    "bump",
+	"delete":  "delete",
+}
+
+var knownCommands = map[string]bool{
+	"version": true, "actor": true, "init": true, "create": true,
+	"new": true, "delete": true, "bump": true, "list": true, "ls": true,
+	"grep": true, "ready": true, "next": true, "wait": true, "show": true,
+	"edit": true, "submit": true, "hold": true, "open": true, "review": true, "status": true,
+	"path": true, "update": true, "state": true, "claim": true, "release": true,
+	"close": true, "approve": true, "accept": true, "reject": true,
+	"check": true, "help": true,
+}
+
+func normalizeObjectFirst(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return args, nil
+	}
+	if _, _, ok := store.ParseID(args[0]); !ok {
+		return args, nil
+	}
+	if len(args) == 1 || strings.HasPrefix(args[1], "-") {
+		normalized := []string{"show", args[0]}
+		return append(normalized, args[1:]...), nil
+	}
+	command := args[1]
+	canonical, ok := objectFirstCommands[command]
+	if !ok {
+		message := "Object-first syntax supports only single-ticket commands."
+		if knownCommands[command] {
+			message = "Command " + command + " cannot be used after a ticket ID."
+		}
+		return nil, contract.NewError(contract.ErrInvalidArgument, message, nil)
+	}
+	normalized := make([]string, 0, len(args)+1)
+	normalized = append(normalized, canonical, args[0])
+	normalized = append(normalized, args[2:]...)
+	return normalized, nil
+}
+
 func consumeLeadingGlobals(args []string, g globalOpts) ([]string, globalOpts, error) {
-	seenJSON, seenScope, seenConfig := false, false, false
+	seenJSON, seenScope, seenConfig, seenDebug := false, false, false, false
 	for len(args) > 0 {
 		arg := args[0]
 		switch {
+		case arg == "--debug":
+			if seenDebug {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --debug.", nil)
+			}
+			seenDebug = true
+			g.debug = true
+			args = args[1:]
 		case arg == "-j" || arg == "--json":
 			if seenJSON {
 				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --json.", nil)

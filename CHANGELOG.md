@@ -2,6 +2,16 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.1.4] - 2026-09-18
+
+### Added
+
+- Added explicit `ticket state` command
+
+### Changed
+
+- Improved CLI dispatch with support for more fluent syntax aliases and positional arguments.
+
 ## [0.1.3] - 2026-09-17
 
 ### Added
@@ -10,8 +20,6 @@ All notable user-facing changes to `ticket` are documented here.
 - Added `TICKET_WORK_TAGS` for implicit tag filters on `next` and `wait`.
 - Added `TICKET_REPOSITORY` for selecting the ticket repository.
 - Added scope concept and ~/.ticket/config.json configuration file.
-- Strengthened ticket ownership enforcement for concurrent workers.
-- Condensed SKILL.md
 
 ### Changed
 
@@ -40,6 +48,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.1.4]: https://github.com/toolsupply/ticket/releases/tag/v0.1.4
 [0.1.3]: https://github.com/toolsupply/ticket/releases/tag/v0.1.3
 [0.1.2]: https://github.com/toolsupply/ticket/releases/tag/v0.1.2
 [0.1.0]: https://github.com/toolsupply/ticket/releases/tag/v0.1.0

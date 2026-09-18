@@ -80,6 +80,27 @@ func runTestHelper(mode string) int {
 				return 1
 			}
 		}
+	case "scm-push-retry-editor-write":
+		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		switch firstArg(args) {
+		case "diff":
+			if fileExists(os.Getenv("SCM_STATE")) {
+				return 0
+			}
+			return 1
+		case "commit":
+			if err := touchHelperFile(os.Getenv("SCM_STATE")); err != nil {
+				return 2
+			}
+		case "push":
+			if os.Getenv("FAIL_PUSH") == "1" {
+				return 1
+			}
+		default:
+			if err := os.WriteFile(lastArg(args), []byte(os.Getenv("TEST_EDITOR_BODY")), 0o600); err != nil {
+				return 2
+			}
+		}
 	case "scm-commit-retry":
 		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
 		switch firstArg(args) {

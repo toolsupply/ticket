@@ -795,6 +795,84 @@ func cmdOpen(ctx *commandContext, args []string) error {
 	})
 }
 
+func cmdState(ctx *commandContext, args []string) error {
+	p := &parser{}
+	ctx.registerWithoutActor(p)
+	p.help = &helpFlag
+	p.helpSeen = &helpSeen
+	var message string
+	var messageSet bool
+	p.flag("message", kindString, func(value string) error { message, messageSet = value, true; return nil }, false)
+	p.alias("m", "message")
+	if err := p.parse(args); err != nil {
+		return err
+	}
+	if helpFlag {
+		return emitHelpCommand(ctx, "state")
+	}
+	if len(p.positionals) != 2 {
+		return contract.NewError(contract.ErrInvalidArgument,
+			"Command state requires a full ticket ID and a state.", nil)
+	}
+	if _, _, ok := store.ParseID(p.positionals[0]); !ok {
+		return contract.NewError(contract.ErrInvalidArgument,
+			"Command state requires a full canonical ticket ID.", nil)
+	}
+	state := p.positionals[1]
+	if !isTicketState(state) || state == "all" {
+		return contract.NewError(contract.ErrInvalidArgument,
+			"State must be open, hold, review, signoff, completed, or rejected.", nil)
+	}
+	if err := ctx.check(); err != nil {
+		return err
+	}
+	var messagePtr *string
+	if messageSet {
+		messagePtr = &message
+	}
+	return runRepoCommand(ctx, "state", func(st *store.Store) (any, error) {
+		return domain.SetState(st, p.positionals[0], state, domain.StateOptions{
+			Actor: os.Getenv("TICKET_ACTOR"), Message: messagePtr,
+		})
+	})
+}
+
+func cmdReview(ctx *commandContext, args []string) error {
+	p := &parser{}
+	ctx.register(p)
+	p.help = &helpFlag
+	p.helpSeen = &helpSeen
+	var message string
+	var messageSet bool
+	p.flag("message", kindString, func(value string) error { message, messageSet = value, true; return nil }, false)
+	p.alias("m", "message")
+	if err := p.parse(args); err != nil {
+		return err
+	}
+	if helpFlag {
+		return emitHelpCommand(ctx, "review")
+	}
+	ref, err := optionalTicketRef(p, "review")
+	if err != nil {
+		return err
+	}
+	if err := ctx.check(); err != nil {
+		return err
+	}
+	var messagePtr *string
+	if messageSet {
+		messagePtr = &message
+	}
+	actor, _ := ctx.effectiveActor()
+	return runRepoCommand(ctx, "review", func(st *store.Store) (any, error) {
+		ref, err = resolveTicketRef(st, ctx, ref, "review")
+		if err != nil {
+			return nil, err
+		}
+		return domain.Review(st, ref, domain.StateOptions{Actor: actor, Message: messagePtr})
+	})
+}
+
 func looksLikeTicketRef(value string) bool {
 	if _, _, ok := store.ParseID(value); ok {
 		return true
@@ -1239,6 +1317,10 @@ func cmdClose(ctx *commandContext, args []string, command string, run func(*stor
 		return err
 	}
 	if helpFlag {
+		return emitHelpCommand(ctx, command)
+	}
+	if command == "reject" && len(p.positionals) == 1 && p.positionals[0] == "help" &&
+		!outcomeSet && inputPath == "" && !messageSet {
 		return emitHelpCommand(ctx, command)
 	}
 	if err := ctx.check(); err != nil {

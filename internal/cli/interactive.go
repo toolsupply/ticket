@@ -28,27 +28,32 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 		return err
 	}
 	draftPath, err := createDraft(st.Root, starter)
-	st.Close()
 	if err != nil {
+		st.Close()
 		return err
 	}
+	if err := st.ClearCurrent(); err != nil {
+		st.Close()
+		return preserveCreateDraftError(err, draftPath)
+	}
+	st.Close()
 
 	draft, err := editDraft(draftPath, "", objectiveEditLine(starterTicket), &ctx.globalOpts)
 	if err != nil {
-		return err
+		return preserveCreateDraftError(err, draftPath)
 	}
 
 	st, backend, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
-		return preserveDraftError(err, draftPath)
+		return preserveCreateDraftError(err, draftPath)
 	}
 	defer st.Close()
 	res, err := domain.CreateFromDraft(st, draft)
 	if err != nil {
-		return preserveDraftError(err, draftPath)
+		return preserveCreateDraftError(err, draftPath)
 	}
 	if err := persistMutation(backend, st, "create", res); err != nil {
-		return preserveDraftError(err, draftPath)
+		return preserveCreateDraftError(err, draftPath)
 	}
 	_ = st.SignalChange()
 	_ = os.Remove(draftPath)
@@ -216,4 +221,23 @@ func preserveDraftError(err error, path string) error {
 		return contract.NewError(ce.Code, ce.Message+" Edited draft preserved at: "+path, ce.Details)
 	}
 	return contract.NewError(contract.ErrIOError, err.Error()+" Edited draft preserved at: "+path, nil)
+}
+
+func preserveCreateDraftError(err error, path string) error {
+	wrapped := preserveDraftError(err, path)
+	var ce *contract.Error
+	if errors.As(wrapped, &ce) {
+		if applied, _ := ce.Details["mutation_applied"].(bool); applied {
+			return contract.NewError(ce.Code, ce.Message+" Reconcile SCM persistence before retrying; do not create another ticket."+currentSelectionDiagnostic(), ce.Details)
+		}
+		return contract.NewError(ce.Code, ce.Message+" No ticket was created."+currentSelectionDiagnostic(), ce.Details)
+	}
+	return wrapped
+}
+
+func currentSelectionDiagnostic() string {
+	if current := strings.TrimSpace(os.Getenv("TICKET_CURRENT")); current != "" {
+		return " Local current ticket is unset; TICKET_CURRENT still selects " + current + "."
+	}
+	return " Current ticket is unset."
 }

@@ -18,8 +18,9 @@ Usage:
 Getting started:
   init       Initialize ./tickets, TICKET_REPOSITORY, or the selected scope repository
   create     Create a ticket
+  new        Alias for create
 
-  Finding work:
+Finding work:
   list       List tickets
   grep       Find tickets by text or regular expression
   next       Select the next eligible ticket
@@ -38,8 +39,10 @@ Working on tickets:
 Lifecycle:
   open       Make a ticket active
   hold       Pause active work
+  review     Send a ticket to review
   close      Mark a ticket completed
   reject     Abandon or decline a ticket
+  state      Force a lifecycle state
 
 Review:
   submit     Send implementation for review
@@ -51,10 +54,7 @@ Maintenance:
   check      Validate the repository
 
 Run 'ticket help <command>' or 'ticket <command> -h' for command-specific help.
-
-Global options:
-  -c, --config FILE  Use an alternate user config file.
-      --scope NAME   Use a named configuration scope.
+Run 'ticket help options' for global and common options.
 
 `
 
@@ -68,7 +68,27 @@ func globalHelpOptions() []contract.Flag {
 	}
 }
 
+var optionsHelpCommand = contract.Command{
+	Name:    "options",
+	Summary: "Show global and common CLI options.",
+	Options: []contract.Flag{
+		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
+		{Name: "--scope", Kind: "name", Description: "Use a named configuration scope."},
+		{Name: "-j, --json", Kind: "bool", Description: "Use compact JSON output for success and errors."},
+		{Name: "-h, --help", Kind: "bool", Description: "Show help for this command."},
+		{Name: "--debug", Kind: "bool", Description: "Print a stack trace if an unexpected internal error occurs; no effect on successful commands."},
+	},
+	Examples: []string{
+		"ticket --config ~/.config/ticket/config.json list",
+		"ticket --scope work next -j",
+		"ticket help create -j",
+	},
+}
+
 func helpPayload(name string) (map[string]any, *contract.Command, bool) {
+	if name == "options" {
+		return map[string]any{"command": optionsHelpCommand.Name, "summary": optionsHelpCommand.Summary, "options": optionsHelpCommand.Options, "examples": optionsHelpCommand.Examples}, &optionsHelpCommand, true
+	}
 	for i := range contract.Commands {
 		command := &contract.Commands[i]
 		if command.Name != name {
@@ -99,7 +119,7 @@ func helpPayload(name string) (map[string]any, *contract.Command, bool) {
 
 func commandHasNoActor(name string) bool {
 	switch name {
-	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "check", "version", "actor", "help":
+	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "state", "check", "version", "actor", "help":
 		return true
 	default:
 		return false
@@ -152,7 +172,9 @@ func commandUsage(name string) string {
 		"edit":    "[ID]",
 		"submit":  "[ID]",
 		"hold":    "[ID]",
+		"review":  "[ID]",
 		"open":    "[ID] [HANDOFF]",
+		"state":   "ID STATE",
 		"status":  "[ID]",
 		"path":    "[ID]",
 		"update":  "[ID]",
@@ -162,6 +184,9 @@ func commandUsage(name string) string {
 		"approve": "[ID...|review|all]",
 		"reject":  "[ID] [OUTCOME]",
 		"help":    "[COMMAND]",
+	}
+	if name == "options" {
+		return "ticket help options"
 	}
 	usage := "ticket " + name + " [options]"
 	if operand := operands[name]; operand != "" {
