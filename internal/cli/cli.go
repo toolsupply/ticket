@@ -236,6 +236,8 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 		return cmdVersion(ctx, rest)
 	case "actor":
 		return cmdActor(ctx, rest)
+	case "info":
+		return cmdInfo(ctx, rest)
 	case "init":
 		return cmdInit(ctx, rest)
 	case "create":

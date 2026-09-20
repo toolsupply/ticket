@@ -38,6 +38,7 @@ var cliCommands = []commandMetadata{
 	{name: "reject", objectFirst: true, mutation: true, acceptsInvocationInput: true},
 	{name: "check"},
 	{name: "actor"},
+	{name: "info"},
 	{name: "version"},
 	{name: "help"},
 }

@@ -63,6 +63,46 @@ func TestInitIdempotent(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOptionalName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"format_version":1,"name":"Ticket project"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("load named config: %v", err)
+	}
+	if cfg.FormatVersion != 1 || cfg.Name != "Ticket project" {
+		t.Fatalf("config=%+v", cfg)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"format_version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("load unnamed config: %v", err)
+	}
+	if cfg.Name != "" {
+		t.Fatalf("unnamed config name=%q", cfg.Name)
+	}
+}
+
+func TestLoadConfigRejectsNonStringName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"format_version":1,"name":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(dir); err == nil {
+		t.Fatal("non-string config name was accepted")
+	} else {
+		var ce *contract.Error
+		if !asContract(err, &ce) || ce.Code != contract.ErrInvalidJSON {
+			t.Fatalf("wrong error: %v", err)
+		}
+	}
+}
+
 // S02: init into a non-empty target fails without touching user data.
 func TestInitNonEmptyFails(t *testing.T) {
 	dir := t.TempDir()

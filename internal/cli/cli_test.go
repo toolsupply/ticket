@@ -297,8 +297,8 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 	if !strings.Contains(topLevelHelp[maintenance:], "  check      Validate the repository\n") {
 		t.Fatalf("check is not in maintenance: %q", topLevelHelp)
 	}
-	if strings.Contains(topLevelHelp, "\n  ready ") {
-		t.Fatalf("ready should be hidden from top-level help: %q", topLevelHelp)
+	if !strings.Contains(topLevelHelp, "  ready [open|review]  Inspect eligible work\n") {
+		t.Fatalf("ready is missing from top-level help: %q", topLevelHelp)
 	}
 	if strings.Contains(topLevelHelp, "Interactive shell:") || strings.Contains(topLevelHelp, "-i, --interactive") {
 		t.Fatalf("top-level help should not document interactive mode: %q", topLevelHelp)
@@ -318,10 +318,14 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &summary); err != nil {
 		t.Fatalf("JSON top-level help: %v", err)
 	}
+	readyFound := false
 	for _, command := range summary.Commands {
 		if command.Name == "ready" {
-			t.Fatal("ready should be hidden from JSON top-level help")
+			readyFound = true
 		}
+	}
+	if !readyFound {
+		t.Fatal("ready is missing from JSON top-level help")
 	}
 }
 
@@ -347,7 +351,7 @@ func TestHelp(t *testing.T) {
 	}
 	for _, args := range [][]string{{"help", "ready"}, {"ready", "-h"}, {"ready", "--help"}} {
 		out, code := runCLIHuman(t, args...)
-		if code != 0 || !strings.Contains(out, "ready - List actionable unassigned tickets.") {
+		if code != 0 || !strings.Contains(out, "ready - Inspect eligible work without claiming.") {
 			t.Fatalf("ready help: args=%v exit=%d out=%q", args, code, out)
 		}
 		jsonOut, jsonCode := runCLI(t, args...)
@@ -378,7 +382,7 @@ func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 	for _, command := range []string{
 		"create", "delete", "bump", "list", "grep", "show", "edit", "submit",
 		"hold", "review", "open", "status", "path", "update", "claim", "release", "actor",
-		"close", "approve", "reject", "help",
+		"close", "approve", "reject", "ready", "next", "wait", "info", "help",
 	} {
 		out, code := runCLIHuman(t, "help", command)
 		if code != 0 {
@@ -395,6 +399,9 @@ func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 		t.Fatalf("list usage: exit=%d out=%q", code, out)
 	}
 	for command, want := range map[string]string{
+		"ready":   "ticket ready [options] [open|review]",
+		"next":    "ticket next [options] [open|review]",
+		"wait":    "ticket wait [options] [open|review]",
 		"show":    "ticket show [options] [ID]",
 		"status":  "ticket status [options] [ID]",
 		"edit":    "ticket edit [options] [ID]",
@@ -404,6 +411,7 @@ func TestCommandHelpUsesCompactUsageBeforeFlags(t *testing.T) {
 		"claim":   "ticket claim [options] [ID]",
 		"release": "ticket release [options] [ID]",
 		"actor":   "ticket actor [options]",
+		"info":    "ticket info [options]",
 		"submit":  "ticket submit [options] [ID]",
 		"hold":    "ticket hold [options] [ID]",
 		"open":    "ticket open [options] [ID] [HANDOFF]",
@@ -470,6 +478,34 @@ func TestCommandHelpKeepsUniversalFlagsTogetherAtEnd(t *testing.T) {
 		if len(lines) < 2 || !strings.Contains(lines[len(lines)-2], "-j, --json") ||
 			!strings.Contains(lines[len(lines)-1], "-h, --help") {
 			t.Fatalf("%s help does not end options with -j and -h: %q", command, section)
+		}
+	}
+}
+
+func TestCommandHelpMovesShortOptionsToBottom(t *testing.T) {
+	out, code := runCLIHuman(t, "help", "close")
+	if code != 0 {
+		t.Fatalf("close help: exit=%d out=%q", code, out)
+	}
+	options := strings.SplitN(out, "Options:\n", 2)
+	if len(options) != 2 {
+		t.Fatalf("close help has no options section: %q", out)
+	}
+	section := strings.SplitN(options[1], "\n\nExamples:", 2)[0]
+	lines := strings.Split(strings.TrimSuffix(section, "\n"), "\n")
+	shortStart := -1
+	for i, line := range lines {
+		if strings.Contains(line, ", --") {
+			shortStart = i
+			break
+		}
+	}
+	if shortStart < 0 {
+		t.Fatalf("close help has no short options: %q", section)
+	}
+	for _, line := range lines[shortStart:] {
+		if !strings.Contains(line, ", --") {
+			t.Fatalf("long-only option follows short option: %q", section)
 		}
 	}
 }

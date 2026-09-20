@@ -92,6 +92,70 @@ func runShell(t *testing.T, input string, args ...string) (stdout, stderr string
 	return out.String(), errOut.String(), code
 }
 
+func TestInteractiveShellTitleIsHumanOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	var titles []string
+	original := setInteractiveTerminalTitle
+	setInteractiveTerminalTitle = func(title string) { titles = append(titles, title) }
+	t.Cleanup(func() { setInteractiveTerminalTitle = original })
+	if _, _, code := runShell(t, "quit\n"); code != 0 {
+		t.Fatalf("human shell startup: code=%d", code)
+	}
+	if len(titles) != 1 || titles[0] != "ticket : idle" {
+		t.Fatalf("unnamed shell titles=%v", titles)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tickets", "config.json"), []byte(`{"format_version":1,"name":"Named repository"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runShell(t, "quit\n"); code != 0 {
+		t.Fatalf("named shell startup: code=%d", code)
+	}
+	if len(titles) != 2 || titles[1] != "ticket : idle" {
+		t.Fatalf("named shell titles=%v", titles)
+	}
+	titles = nil
+	out, stderr, code := runJSONStream(t, streamRequest(t, []string{"version"}, nil)+"\n")
+	if code != 0 || stderr != "" {
+		t.Fatalf("JSON shell startup: code=%d stderr=%q", code, stderr)
+	}
+	if len(titles) != 0 || strings.Contains(out, "\x1b]2;") {
+		t.Fatalf("JSON shell emitted titles=%v", titles)
+	}
+}
+
+func TestOneShotCommandsDoNotSetTerminalTitle(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	var titles []string
+	original := setInteractiveTerminalTitle
+	setInteractiveTerminalTitle = func(title string) { titles = append(titles, title) }
+	t.Cleanup(func() { setInteractiveTerminalTitle = original })
+	out, code := runCLIHuman(t, "list")
+	if code != 0 || strings.Contains(out, "\x1b]2;") || len(titles) != 0 {
+		t.Fatalf("one-shot title output: code=%d out=%q titles=%v", code, out, titles)
+	}
+}
+
+func TestInteractiveShellTitleTracksCurrentTicket(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Title ticket", "Track the selected ticket."))["id"].(string)
+	var titles []string
+	original := setInteractiveTerminalTitle
+	setInteractiveTerminalTitle = func(title string) { titles = append(titles, title) }
+	t.Cleanup(func() { setInteractiveTerminalTitle = original })
+
+	out, stderr, code := runShell(t, "show "+id+"\nexit\n")
+	want := "ticket : " + id + " : Title ticket"
+	if code != 0 || !strings.Contains(out, "Title ticket") || stderr == "" || len(titles) != 2 || titles[0] != "ticket : idle" || titles[1] != want {
+		t.Fatalf("current ticket title: code=%d stdout=%q stderr=%q titles=%v", code, out, stderr, titles)
+	}
+}
+
 func TestInteractiveCommandLineTokenizationAcrossPlatforms(t *testing.T) {
 	tests := []struct {
 		name string
@@ -357,6 +421,28 @@ func TestInteractiveShellExecutesFinalLineAtEOF(t *testing.T) {
 	out, stderr, code := runShell(t, "version")
 	if code != 0 || !strings.Contains(out, "ticket "+Version+" (api") {
 		t.Fatalf("final shell line at EOF: code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+}
+
+func TestInteractiveShellExecutesBangShellCommands(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+
+	out, stderr, code := runShell(t, "!echo shell escape\nversion\nexit\n")
+	if code != 0 || !strings.Contains(out, "shell escape") || !strings.Contains(out, "ticket "+Version+" (api") {
+		t.Fatalf("shell escape: code=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+}
+
+func TestInteractiveShellRecoversAfterBangShellCommandFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+
+	out, stderr, code := runShell(t, "!exit 7\nversion\nexit\n")
+	if code != 0 || !strings.Contains(stderr, "shell command failed") || !strings.Contains(out, "ticket "+Version+" (api") {
+		t.Fatalf("shell escape failure: code=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 }
 

@@ -2,11 +2,19 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.1.7] - 2026-09-21
+
+### Added
+
+- Added queue-aware `ticket ready [open|review]` inspection
+- Added terminal title control in 'ticket -i' shell mode
+- Added optional name property to repository config.json
+
 ## [0.1.6] - 2026-09-20
 
 ### Added
 
-- Added the `ticket --interactive` line-oriented shell
+- Added the `ticket -i` line-oriented shell mode
 - Added promptless NDJSON transport with `ticket -j -i`.
 - Added `ticket add` as an alias for the create/new commands.
 
@@ -65,6 +73,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.1.7]: https://github.com/toolsupply/ticket/releases/tag/v0.1.7
 [0.1.6]: https://github.com/toolsupply/ticket/releases/tag/v0.1.6
 [0.1.4]: https://github.com/toolsupply/ticket/releases/tag/v0.1.4
 [0.1.3]: https://github.com/toolsupply/ticket/releases/tag/v0.1.3

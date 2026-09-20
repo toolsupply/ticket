@@ -8,7 +8,7 @@ import (
 func TestReadOnlyCommandsRejectActor(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	commands := []string{"init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "check", "version", "actor", "help"}
+	commands := []string{"init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "check", "version", "actor", "info", "help"}
 	for _, command := range commands {
 		args := []string{command, "--actor", "codex"}
 		if command == "grep" {

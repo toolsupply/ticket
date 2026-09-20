@@ -17,14 +17,16 @@ Usage:
 
 Getting started:
   init       Initialize ./tickets, TICKET_REPOSITORY, or the selected scope repository
+  info       Show selected repository metadata
   create     Create a ticket
   new        Alias for create
 
 Finding work:
   list       List tickets
   grep       Find tickets by text or regular expression
-  next       Select the next eligible ticket
-  wait       Wait for eligible work
+  ready [open|review]  Inspect eligible work
+  next [open|review]   Select the next eligible ticket
+  wait [open|review]   Wait for eligible work
   show       Show a ticket
   status     Show concise ticket status
 
@@ -61,8 +63,8 @@ Run 'ticket help options' for global and common options.
 func globalHelpOptions() []contract.Flag {
 	return []contract.Flag{
 		{Name: "--actor", Kind: "token", Description: "Actor identity override; takes precedence over TICKET_ACTOR."},
-		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
 		{Name: "--scope", Kind: "name", Description: "Use a named configuration scope."},
+		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
 		{Name: "-j, --json", Kind: "bool", Description: "Use compact JSON output for success and errors."},
 		{Name: "-h, --help", Kind: "bool", Description: "Show help for this command."},
 	}
@@ -74,7 +76,7 @@ var optionsHelpCommand = contract.Command{
 	Options: []contract.Flag{
 		{Name: "--scope", Kind: "name", Description: "Use a named configuration scope."},
 		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
-		{Name: "-i, --interactive", Kind: "bool", Description: "Start the line-oriented shell."},
+		{Name: "-i, --interactive", Kind: "bool", Description: "Start the line-oriented shell; prefix a line with ! to run it in the system shell."},
 		{Name: "-j, --json", Kind: "bool", Description: "Use compact JSON output for success and errors."},
 		{Name: "-h, --help", Kind: "bool", Description: "Show help for this command."},
 		{Name: "--debug", Kind: "bool", Description: "Print a stack trace if an unexpected internal error occurs; no effect on successful commands."},
@@ -88,7 +90,8 @@ var optionsHelpCommand = contract.Command{
 
 func helpPayload(name string) (map[string]any, *contract.Command, bool) {
 	if name == "options" {
-		return map[string]any{"command": optionsHelpCommand.Name, "summary": optionsHelpCommand.Summary, "options": optionsHelpCommand.Options, "examples": optionsHelpCommand.Examples}, &optionsHelpCommand, true
+		optionsHelp := orderedHelpOptions(optionsHelpCommand.Options)
+		return map[string]any{"command": optionsHelpCommand.Name, "summary": optionsHelpCommand.Summary, "options": optionsHelp, "examples": optionsHelpCommand.Examples}, &optionsHelpCommand, true
 	}
 	for i := range contract.Commands {
 		command := &contract.Commands[i]
@@ -113,14 +116,29 @@ func helpPayload(name string) (map[string]any, *contract.Command, bool) {
 			}
 			options = append(options, option)
 		}
-		return map[string]any{"command": command.Name, "summary": command.Summary, "options": options, "examples": command.Examples}, command, true
+		return map[string]any{"command": command.Name, "summary": command.Summary, "options": orderedHelpOptions(options), "examples": command.Examples}, command, true
 	}
 	return nil, nil, false
 }
 
+// orderedHelpOptions keeps long-only options prominent and puts options that
+// have a short spelling at the bottom of each command's help page.
+func orderedHelpOptions(options []contract.Flag) []contract.Flag {
+	longOnly := make([]contract.Flag, 0, len(options))
+	short := make([]contract.Flag, 0, len(options))
+	for _, option := range options {
+		if strings.Contains(option.Name, ",") {
+			short = append(short, option)
+		} else {
+			longOnly = append(longOnly, option)
+		}
+	}
+	return append(longOnly, short...)
+}
+
 func commandHasNoActor(name string) bool {
 	switch name {
-	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "state", "check", "version", "actor", "help":
+	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "state", "check", "version", "actor", "info", "help":
 		return true
 	default:
 		return false
@@ -166,6 +184,8 @@ func commandUsage(name string) string {
 		"bump":    "[ID]",
 		"list":    "[STATE...|ID...]",
 		"grep":    "EXPRESSION...",
+		"info":    "",
+		"ready":   "[open|review]",
 		"next":    "[open|review]",
 		"wait":    "[open|review]",
 		"show":    "[ID]",
@@ -223,9 +243,6 @@ func emitTopLevelHelp(ctx *commandContext) error {
 	if ctx.json {
 		commands := make([]map[string]string, 0, len(contract.Commands))
 		for _, command := range contract.Commands {
-			if command.Name == "ready" {
-				continue
-			}
 			commands = append(commands, map[string]string{"name": command.Name, "summary": command.Summary})
 		}
 		return emitJSON(ctx.stdout, map[string]any{"commands": commands})

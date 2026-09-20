@@ -11,9 +11,10 @@ import (
 
 // Config is the committed repository format configuration.
 //
-// config.json contains the repository format version.
+// config.json contains the repository format version and optional display name.
 type Config struct {
 	FormatVersion int
+	Name          string
 }
 
 const configFileName = "config.json"
@@ -52,7 +53,8 @@ func LoadConfig(root string) (Config, error) {
 			fmt.Sprintf("config.json rejected: %v.", err), nil)
 	}
 	var doc struct {
-		FormatVersion int `json:"format_version"`
+		FormatVersion int    `json:"format_version"`
+		Name          string `json:"name"`
 	}
 	if err := jsonx.Decode(data, &doc); err != nil {
 		return Config{}, contract.NewError(contract.ErrInvalidJSON,
@@ -62,7 +64,7 @@ func LoadConfig(root string) (Config, error) {
 		return Config{}, contract.NewError(contract.ErrUnsupportedVersion,
 			fmt.Sprintf("Unsupported repository format version %d; this version supports 1.", doc.FormatVersion), nil)
 	}
-	return Config{FormatVersion: doc.FormatVersion}, nil
+	return Config{FormatVersion: doc.FormatVersion, Name: doc.Name}, nil
 }
 
 // writeConfig renders config.json in canonical form.

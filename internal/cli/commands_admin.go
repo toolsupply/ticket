@@ -96,6 +96,10 @@ func cmdBump(ctx *commandContext, args []string) error {
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
+	var priority int
+	var hasPriority bool
+	p.intValue("priority", &priority, &hasPriority)
+	p.alias("p", "priority")
 	if err := p.parse(args); err != nil {
 		return err
 	}
@@ -122,12 +126,15 @@ func cmdBump(ctx *commandContext, args []string) error {
 		if err != nil {
 			return nil, err
 		}
-		priority := ticket.Priority
-		if priority > 0 {
-			priority--
+		targetPriority := ticket.Priority
+		if !hasPriority && targetPriority > 0 {
+			targetPriority--
+		}
+		if hasPriority {
+			targetPriority = priority
 		}
 		return domain.Update(st, ref, domain.UpdateOptions{
-			Set: map[string]any{"priority": priority}, Actor: actor,
+			Set: map[string]any{"priority": targetPriority}, Actor: actor,
 		})
 	})
 }

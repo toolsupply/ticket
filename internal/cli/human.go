@@ -142,6 +142,8 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 		}
 	case map[string]string:
 		fmt.Fprintf(stdout, "%s %s\n", r["id"], r["path"])
+	case *repositoryInfo:
+		renderRepositoryInfoHuman(&commandContext{stdout: stdout}, r)
 	case *domain.UpdateResult:
 		if r.Changed {
 			fmt.Fprintf(stdout, "updated %s (changed: %s)\n", r.ID, strings.Join(r.ChangedFields, ", "))

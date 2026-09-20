@@ -35,6 +35,14 @@ type NextOptions struct {
 	Actor    string
 }
 
+// ReadyOptions selects the inspection queue and its readiness filters.
+// The open queue applies implementation-readiness rules; the review queue
+// follows review eligibility used by NextWithOptions without mutating state.
+type ReadyOptions struct {
+	Queue   string
+	Filters ListOptions
+}
+
 var blockerOrder = map[string]int{
 	"state_blocked": 0, "assigned": 1, "missing_objective": 2,
 	"external": 3, "dependency_open": 4, "dependency_rejected": 5,
@@ -61,6 +69,22 @@ func Readiness(st *store.Store, id string) (*ReadinessView, error) {
 
 // Ready lists actionable tickets using the same row projection as List.
 func Ready(st *store.Store, opts ListOptions) (*ListResult, error) {
+	return ReadyWithOptions(st, ReadyOptions{Filters: opts})
+}
+
+// ReadyWithOptions lists an inspection-only frontier for one worker queue.
+func ReadyWithOptions(st *store.Store, readyOpts ReadyOptions) (*ListResult, error) {
+	queue, err := normalizeQueue(readyOpts.Queue)
+	if err != nil {
+		return nil, err
+	}
+	if queue == "review" {
+		return reviewReady(st, readyOpts.Filters)
+	}
+	return implementationReady(st, readyOpts.Filters)
+}
+
+func implementationReady(st *store.Store, opts ListOptions) (*ListResult, error) {
 	requestedState, requestedAssignee := opts.State, opts.Assignee
 	if requestedState != "" || len(opts.States) > 0 || requestedAssignee != "" || opts.Unassigned {
 		return nil, contract.NewError(contract.ErrInvalidArgument, "Ready accepts only readiness filters.", nil)
@@ -132,6 +156,15 @@ func Ready(st *store.Store, opts ListOptions) (*ListResult, error) {
 	return result, nil
 }
 
+func reviewReady(st *store.Store, opts ListOptions) (*ListResult, error) {
+	if opts.State != "" || len(opts.States) > 0 || opts.Assignee != "" || opts.Unassigned {
+		return nil, contract.NewError(contract.ErrInvalidArgument, "Ready accepts only readiness filters.", nil)
+	}
+	opts.State = "review"
+	opts.Unassigned = true
+	return List(st, opts)
+}
+
 // Next returns the first ticket selected by the requested queue. When claim
 // is true, selection and ownership mutation happen while the caller's store
 // lock is held, so cooperating invocations cannot claim the same ticket.
@@ -140,13 +173,9 @@ func Next(st *store.Store, claim bool, actor string) (*NextResult, error) {
 }
 
 func NextWithOptions(st *store.Store, opts NextOptions) (*NextResult, error) {
-	queue := opts.Queue
-	if queue == "" {
-		queue = "open"
-	}
-	if queue != "open" && queue != "review" {
-		return nil, contract.NewError(contract.ErrInvalidArgument,
-			"Queue must be open or review.", nil)
+	queue, err := normalizeQueue(opts.Queue)
+	if err != nil {
+		return nil, err
 	}
 	if opts.Priority != nil && (*opts.Priority < 0 || *opts.Priority > 4) {
 		return nil, contract.NewError(contract.ErrInvalidArgument, "Priority must be an integer 0-4.", nil)
@@ -181,17 +210,16 @@ func NextWithOptions(st *store.Store, opts NextOptions) (*NextResult, error) {
 		}
 	}
 	var selected *ListResult
-	var err error
 	if queue == "open" {
-		selected, err = Ready(st, ListOptions{Tags: opts.Tags, Priority: opts.Priority,
+		selected, err = ReadyWithOptions(st, ReadyOptions{Queue: queue, Filters: ListOptions{Tags: opts.Tags, Priority: opts.Priority,
 			Fields: []string{"id", "title", "state", "priority", "assignee", "tags"},
-			Limit:  1, LimitSet: true})
+			Limit:  1, LimitSet: true}})
 	} else {
-		selected, err = List(st, ListOptions{
-			State: "review", Tags: opts.Tags, Priority: opts.Priority,
-			Fields:     []string{"id", "title", "state", "priority", "assignee", "tags"},
-			Unassigned: true, Limit: 1, LimitSet: true,
-		})
+		selected, err = ReadyWithOptions(st, ReadyOptions{Queue: queue, Filters: ListOptions{
+			Tags: opts.Tags, Priority: opts.Priority,
+			Fields: []string{"id", "title", "state", "priority", "assignee", "tags"},
+			Limit:  1, LimitSet: true,
+		}})
 	}
 	if err != nil {
 		return nil, err
@@ -208,6 +236,17 @@ func NextWithOptions(st *store.Store, opts NextOptions) (*NextResult, error) {
 		item.Assignee = &claimed.Assignee
 	}
 	return &NextResult{Item: &item, Changed: opts.Claim}, nil
+}
+
+func normalizeQueue(queue string) (string, error) {
+	if queue == "" {
+		return "open", nil
+	}
+	if queue != "open" && queue != "review" {
+		return "", contract.NewError(contract.ErrInvalidArgument,
+			"Queue must be open or review.", nil)
+	}
+	return queue, nil
 }
 
 func summaryMatchesWorkFilters(item Summary, opts NextOptions) bool {

@@ -231,7 +231,8 @@ func cmdReady(ctx *commandContext, args []string) error {
 	if err := ctx.check(); err != nil {
 		return err
 	}
-	if err := p.requireNoPositionals("ready"); err != nil {
+	queue, err := workQueue(p.positionals, "ready")
+	if err != nil {
 		return err
 	}
 	tags = ctx.workTags(tags)
@@ -247,7 +248,7 @@ func cmdReady(ctx *commandContext, args []string) error {
 		opts.Fields = strings.Split(fields, ",")
 	}
 	return runRepoCommand(ctx, "ready", func(st *store.Store) (any, error) {
-		return domain.Ready(st, opts)
+		return domain.ReadyWithOptions(st, domain.ReadyOptions{Queue: queue, Filters: opts})
 	})
 }
 

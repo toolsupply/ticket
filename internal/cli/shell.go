@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/toolsupply/ticket/internal/contract"
 	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/terminaltitle"
 )
+
+var setInteractiveTerminalTitle = terminaltitle.Set
 
 func interactiveRequested(args []string) bool {
 	for i := 0; i < len(args); i++ {
@@ -74,7 +79,27 @@ func runInteractiveIO(args []string, out io.Writer, stdin io.Reader, stderr io.W
 	}
 	reader := bufio.NewReader(input)
 	seedInteractiveCurrent(executor, stderr)
-	return interactiveLoop(executor, reader, out, stderr)
+	return interactiveLoopWithStdin(executor, reader, out, stderr, input)
+}
+
+func setInteractiveTitle(executor *sessionExecutor) {
+	setInteractiveTerminalTitle(interactiveTerminalTitle(executor))
+}
+
+func interactiveTerminalTitle(executor *sessionExecutor) string {
+	if executor.state.current == "" {
+		return "ticket : idle"
+	}
+	st, err := executor.globalOpts.openStore(executor.cwd)
+	if err == nil {
+		defer st.Close()
+		if full, resolveErr := st.ResolveID(executor.state.current, true); resolveErr == nil {
+			if ticket, readErr := domain.ReadTicket(st, full); readErr == nil {
+				return "ticket : " + full + " : " + ticket.Title
+			}
+		}
+	}
+	return "ticket : " + executor.state.current
 }
 
 func removeInteractiveFlags(args []string) ([]string, error) {
@@ -169,11 +194,28 @@ func interactiveLoop(executor *sessionExecutor, input *bufio.Reader, out, stderr
 	interrupts := make(chan os.Signal, 1)
 	signal.Notify(interrupts, os.Interrupt)
 	defer signal.Stop(interrupts)
-	return interactiveLoopWithInterrupts(executor, input, out, stderr, interrupts)
+	return interactiveLoopWithStdinAndInterrupts(executor, input, out, stderr, os.Stdin, interrupts)
 }
 
 func interactiveLoopWithInterrupts(executor *sessionExecutor, input *bufio.Reader, out, stderr io.Writer, interrupts <-chan os.Signal) int {
+	return interactiveLoopWithStdinAndInterrupts(executor, input, out, stderr, os.Stdin, interrupts)
+}
+
+func interactiveLoopWithStdin(executor *sessionExecutor, input *bufio.Reader, out, stderr io.Writer, commandStdin io.Reader) int {
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt)
+	defer signal.Stop(interrupts)
+	return interactiveLoopWithStdinAndInterrupts(executor, input, out, stderr, commandStdin, interrupts)
+}
+
+func interactiveLoopWithStdinAndInterrupts(executor *sessionExecutor, input *bufio.Reader, out, stderr io.Writer, commandStdin io.Reader, interrupts <-chan os.Signal) int {
+	lastTitle := ""
 	for {
+		title := interactiveTerminalTitle(executor)
+		if title != lastTitle {
+			setInteractiveTerminalTitle(title)
+			lastTitle = title
+		}
 		if err := renderInteractivePrompt(executor, stderr); err != nil {
 			fmt.Fprintln(stderr, "error: "+err.Error())
 		}
@@ -189,6 +231,12 @@ func interactiveLoopWithInterrupts(executor *sessionExecutor, input *bufio.Reade
 		}
 		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if command, ok := interactiveShellCommandLine(line); ok {
+			if err := runInteractiveShellCommand(command, commandStdin, out, stderr); err != nil {
+				fmt.Fprintln(stderr, "error: "+err.Error())
+			}
 			continue
 		}
 		argv, err := splitCommandLine(line)
@@ -226,6 +274,33 @@ func interactiveLoopWithInterrupts(executor *sessionExecutor, input *bufio.Reade
 		}
 		_, _ = io.Copy(out, &commandOutput)
 	}
+}
+
+func interactiveShellCommandLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "!") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, "!")), true
+}
+
+func runInteractiveShellCommand(command string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if command == "" {
+		return errors.New("shell command is empty")
+	}
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd.exe", "/d", "/s", "/c", command)
+	} else {
+		cmd = exec.Command("sh", "-c", command)
+	}
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("shell command failed: %w", err)
+	}
+	return nil
 }
 
 type interactiveReadResult struct {

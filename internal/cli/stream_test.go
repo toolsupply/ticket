@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -135,6 +136,34 @@ func TestJSONStreamOneRequestOneResponseAndRecovery(t *testing.T) {
 	oneShot := mustCLI(t, "version")
 	if lines := strings.Split(out, "\n"); lines[3]+"\n" != oneShot {
 		t.Fatalf("stream changed one-shot JSON response: stream=%q one-shot=%q", lines[3]+"\n", oneShot)
+	}
+}
+
+func TestJSONStreamInfoResponseAndRecovery(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	if err := os.WriteFile(filepath.Join(dir, "tickets", "config.json"), []byte(`{"format_version":1,"name":"Stream repository"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{
+		streamRequest(t, []string{"info"}, nil),
+		streamRequest(t, []string{"version"}, nil),
+	}, "\n") + "\n"
+	out, stderr, code := runJSONStream(t, input)
+	if code != 0 || stderr != "" {
+		t.Fatalf("info JSON stream: exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	responses := decodeJSONStreamResponses(t, out)
+	if len(responses) != 2 || strings.Count(out, "\n") != 2 {
+		t.Fatalf("info stream responses=%d output=%q", len(responses), out)
+	}
+	info := responses[0]
+	if info["path"] != filepath.Join(dir, "tickets") || info["name"] != "Stream repository" || info["format_version"] != float64(1) || info["storage_version"] != float64(1) || info["scope"] != nil {
+		t.Fatalf("info stream response: %v", info)
+	}
+	if responses[1]["version"] != Version {
+		t.Fatalf("stream was not usable after info: %v", responses)
 	}
 }
 

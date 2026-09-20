@@ -14,7 +14,7 @@ Key features:
 - Explicit implementation, review, and human-signoff workflow
 - Deterministic work selection for coding agents
 - Optional `ticket-tasks` Skill for agent workflows
-- Optional Got and SVN synchronization
+- Optional Git and SVN synchronization
 - Single Linux, macOS, or Windows binary
 - MIT licensed
 
@@ -86,6 +86,8 @@ Initialize a ticket repository:
 ticket init
 ```
 
+Inspect the selected repository metadata for integrations:
+
 ### Human workflow
 
 Create some tickets and list all active (non-closed and non-rejected) tickets:
@@ -123,12 +125,39 @@ ticket close
 
 The submit and review lifecycle states are optional; tickets can be closed or rejected from any state.
 
+### Hints
+
+- `ticket -i` is a simple shell mode where human does not have to type ticket in front of every command
+- Use shell command execution in your harness to control ticket, for example `!ticket list open`
+- Use `ticket ready` to check if there are actionable tickets or `ticket list review` to check if there is anything to reivew
+- Instruct reviewer agent to close tickets once happy to bypass human signoff, example prompt also trigging Codex goals:
+
+```sh
+review all reviewable tickets; close if satified; set goal
+```
+
 ## How it works
 
-`ticket` uses the local filesystem as its database. Tickets are Markdown files that can live directly alongside the source code they describe.
-Concurrent access and atomic operations are managed by one local lock for the ticket repository.
+The `ticket` CLI program manages ticket state, ownership, dependencies, parent/child relationships, work selection, and optional source-control synchronization.
 
-The CLI manages ticket state, ownership, dependencies, parent/child relationships, work selection, and optional source-control synchronization.
+`ticket` uses the local filesystem as its database. Tickets are Markdown files that can live directly alongside the source code they describe. A `ticket` repository is a directory of plain files:
+
+```text
+tickets/
+├─ config.json
+├─ 20260920-12345/
+│  └─ TASK.md
+├─ 20260920-23456/
+│  ├─ TASK.md
+│  └─ attachments/
+│     └─ design.png
+```
+
+The `TASK.md` files contain all ticket metadata, objectives, handoffs, and work logs.
+
+The files can be edited directly in a text editor, but when there may be concurrent access, both humans and agents should perform ticket management operations through the `ticket` program.
+
+A ticket repository has no fixed place on the filesystem. It can live inside the source tree it describes or in a separate working tree.
 
 ### Dependencies and parent tickets
 

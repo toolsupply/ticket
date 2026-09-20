@@ -51,8 +51,12 @@ func cmdUpdate(ctx *commandContext, args []string) error {
 	p.helpSeen = &helpSeen
 	var inputPath string
 	var tags []string
+	var priority int
+	var hasPriority bool
 	p.str("input", &inputPath)
 	p.repeat("tag", &tags)
+	p.intValue("priority", &priority, &hasPriority)
+	p.alias("p", "priority")
 	if err := p.parse(args); err != nil {
 		return err
 	}
@@ -72,13 +76,13 @@ func cmdUpdate(ctx *commandContext, args []string) error {
 	if err != nil {
 		return err
 	}
-	if inputPath == "" && len(tags) == 0 {
+	if inputPath == "" && len(tags) == 0 && !hasPriority {
 		return contract.NewError(contract.ErrInvalidArgument,
 			"Update requires --input.", nil)
 	}
-	if inputPath != "" && len(tags) > 0 {
+	if inputPath != "" && (len(tags) > 0 || hasPriority) {
 		return contract.NewError(contract.ErrInvalidArgument,
-			"--tag cannot be combined with --input; set tags in the input JSON.", nil)
+			"Direct update flags cannot be combined with --input; set fields in the input JSON.", nil)
 	}
 	var in updateInput
 	if inputPath != "" {
@@ -86,7 +90,13 @@ func cmdUpdate(ctx *commandContext, args []string) error {
 			return err
 		}
 	} else {
-		in.Set = map[string]any{"tags": tags}
+		in.Set = map[string]any{}
+		if len(tags) > 0 {
+			in.Set["tags"] = tags
+		}
+		if hasPriority {
+			in.Set["priority"] = priority
+		}
 	}
 	actor := ctx.actor
 	if actor == "" {

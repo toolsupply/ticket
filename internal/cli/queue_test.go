@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestReviewQueueSelectsClaimsAndResumesReviewWork(t *testing.T) {
 	dir := t.TempDir()
@@ -105,5 +108,61 @@ func TestWorkQueueRejectsUnknownQueue(t *testing.T) {
 	}
 	if out, code := runCLI(t, "next", "completed"); code != 2 || errCode(t, out) != "invalid_argument" {
 		t.Fatalf("unknown queue: exit=%d out=%q", code, out)
+	}
+}
+
+func TestReadyReviewQueueMatchesNextWithoutClaiming(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	first := exactlyOneJSONObject(t, mustCLI(t, "create", "Review first", "Inspect first.", "--priority", "1", "--tag", "security"))["id"].(string)
+	second := exactlyOneJSONObject(t, mustCLI(t, "create", "Review second", "Inspect second.", "--priority", "2", "--tag", "security", "--tag", "linux"))["id"].(string)
+	for _, id := range []string{first, second} {
+		if out, code := runCLI(t, "claim", id, "--actor", "coder"); code != 0 {
+			t.Fatalf("claim %s: exit=%d out=%q", id, code, out)
+		}
+		if out, code := runCLI(t, "submit", id, "--actor", "coder"); code != 0 {
+			t.Fatalf("submit %s: exit=%d out=%q", id, code, out)
+		}
+	}
+	openDefault, code := runCLI(t, "ready")
+	if code != 0 {
+		t.Fatalf("default ready: exit=%d out=%q", code, openDefault)
+	}
+	openExplicit, code := runCLI(t, "ready", "open")
+	if code != 0 || openExplicit != openDefault {
+		t.Fatalf("ready open differs from default: default=%q explicit=%q", openDefault, openExplicit)
+	}
+
+	ready := exactlyOneJSONObject(t, mustCLI(t, "ready", "review", "--tag", "security", "--fields", "id,state,assignee"))
+	items := ready["items"].([]any)
+	if len(items) != 2 || items[0].(map[string]any)["id"] != first || items[1].(map[string]any)["assignee"] != nil {
+		t.Fatalf("review ready result: %v", ready)
+	}
+	next := exactlyOneJSONObject(t, mustCLI(t, "next", "review", "--tag", "security"))
+	if next["item"].(map[string]any)["id"] != first {
+		t.Fatalf("review next disagrees with ready: ready=%v next=%v", ready, next)
+	}
+	filtered := exactlyOneJSONObject(t, mustCLI(t, "ready", "review", "--priority", "1", "--without-tag", "linux"))
+	filteredItems := filtered["items"].([]any)
+	if len(filteredItems) != 1 || filteredItems[0].(map[string]any)["id"] != first {
+		t.Fatalf("review filters: %v", filtered)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", first))
+	if view["assignee"] != nil {
+		t.Fatalf("ready review assigned a ticket: %v", view)
+	}
+
+	if out, code := runCLI(t, "ready", "hold"); code != 2 || errCode(t, out) != "invalid_argument" {
+		t.Fatalf("invalid ready queue: exit=%d out=%q", code, out)
+	}
+	if out, code := runCLI(t, "ready", "review", "extra"); code != 2 || errCode(t, out) != "invalid_argument" {
+		t.Fatalf("extra ready queue argument: exit=%d out=%q", code, out)
+	}
+	human, code := runCLIHuman(t, "ready", "review", "--tag", "security")
+	if code != 0 || !strings.Contains(human, first) || !strings.Contains(human, "STATE") {
+		t.Fatalf("human review ready: exit=%d out=%q", code, human)
 	}
 }

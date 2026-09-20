@@ -5,6 +5,7 @@
 /dist/
 /examples/
 /review/
+/.ticket-orc/
 
 # Test and temporary data
 *.test
