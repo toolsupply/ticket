@@ -14,6 +14,9 @@ func TestOpenAndRejectUseCurrentTicketWithPositionalText(t *testing.T) {
 	mustCLI(t, "init")
 	created := exactlyOneJSONObject(t, mustCLI(t, "create", "Current transition", "Exercise current-ticket transitions."))
 	id := created["id"].(string)
+	if _, code := runCLIHuman(t, "show", id); code != 0 {
+		t.Fatalf("select current ticket: exit=%d", code)
+	}
 	if _, code := runCLI(t, "hold", id); code != 0 {
 		t.Fatalf("hold: exit=%d", code)
 	}
@@ -26,6 +29,9 @@ func TestOpenAndRejectUseCurrentTicketWithPositionalText(t *testing.T) {
 	}
 
 	second := exactlyOneJSONObject(t, mustCLI(t, "create", "Current rejection", "Exercise current-ticket rejection."))["id"].(string)
+	if _, code := runCLIHuman(t, "show", second); code != 0 {
+		t.Fatalf("select rejection ticket: exit=%d", code)
+	}
 	if out, code := runCLIHuman(t, "reject", "Duplicate work"); code != 0 || !strings.Contains(out, second+": open -> rejected") {
 		t.Fatalf("reject with current ticket and outcome: exit=%d output=%q", code, out)
 	}
@@ -48,6 +54,9 @@ func TestReviewUsesDirectStateTransitionAndCurrentTicket(t *testing.T) {
 		t.Fatalf("direct review state: %v", view)
 	}
 	second := exactlyOneJSONObject(t, mustCLI(t, "create", "Current review", "Use the current ticket."))["id"].(string)
+	if _, code := runCLIHuman(t, "show", second); code != 0 {
+		t.Fatalf("select review ticket: exit=%d", code)
+	}
 	if out, code := runCLIHuman(t, "review", "-m", "Sent for review"); code != 0 || out != second+": open -> review\n" {
 		t.Fatalf("current review: exit=%d out=%q", code, out)
 	}

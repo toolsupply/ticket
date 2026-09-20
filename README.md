@@ -13,8 +13,8 @@ Key features:
 - Dependencies, parent/child work, priorities, and ownership
 - Explicit implementation, review, and human-signoff workflow
 - Deterministic work selection for coding agents
-- Optional Git and SVN synchronization
 - Optional `ticket-tasks` Skill for agent workflows
+- Optional Got and SVN synchronization
 - Single Linux, macOS, or Windows binary
 - MIT licensed
 
@@ -162,8 +162,6 @@ hold ─open─> open ─submit─> review ─approve─> signoff ─close─> c
 
 `open` can return a ticket from any state to implementation work. `reject` abandons work rather than requesting changes.
 
-`open`, `hold`, `close`, and `reject` directly control the lifecycle. `claim`, `release`, `submit`, and `approve` support ownership and the implementation/review workflow.
-
 ## Environment
 
 | Variable | Purpose |
@@ -185,7 +183,7 @@ For example, configure an editor that waits for completion:
 export TICKET_EDITOR="code --wait"
 ```
 
-### Configuration file and named scopes
+### Configuration file
 
 An optional `~/.ticket/config.json` can define named scopes for users who work
 with more than one ticket repository or routing group.
@@ -193,7 +191,6 @@ with more than one ticket repository or routing group.
 ```json
 {
   "editor": "code --wait",
-  "decorator": "glow",
   "scopes": {
     "windows": {
       "repository": "/work/project/tickets",
@@ -208,6 +205,8 @@ The repository path may be absolute or relative to the directory containing the 
 file. Environment variables and explicit command-line options override scope
 defaults.
 
+### Named scopes
+
 Select the scope for a session with `TICKET_SCOPE`, or for one command with `--scope`:
 
 ```sh
@@ -215,16 +214,6 @@ export TICKET_SCOPE=windows
 export TICKET_ACTOR=coder-01
 ticket next --claim
 ```
-
-## Monitoring work
-
-Live monitoring is work in progress. Shell tools can for now be used to monitor work:
-
-```sh
-watch -n 1 ticket list
-```
-
-Ticket state remains available independently of any particular agent session, so work can be inspected or reprioritized without interrupting the worker performing it.
 
 ## Selecting work
 
@@ -332,49 +321,9 @@ there is a reason to persist it as a ticket.
 
 This keeps the shared Skill focused on ticket mechanics while allowing each repository to choose how much work becomes persistent ticket state.
 
-### Running a worker - lightweight orchestration
+### Orchestration
 
-A simple shell supervisor can keep a stable worker identity, wait for work, launch a coding agent, and restart it when the job is done or the process exits:
-
-```sh
-export TICKET_ACTOR=coder-1
-
-while true; do
-    ticket wait --claim -j || exit 1
-    codex "Work the ticket currently assigned to this actor. Submit it when complete, then exit."
-done
-```
-
-If a worker exits before submitting, restarting it with the same actor identity resumes its assigned ticket.
-
-Additional workers use different actor identities:
-
-```sh
-TICKET_ACTOR=coder-2 ./worker.sh
-TICKET_ACTOR=coder-3 ./worker.sh
-```
-
-Workers can be specialized using tag filters:
-
-```sh
-ticket wait --claim --tag windows
-ticket wait review --claim --tag security
-```
-
-### Running a reviewer
-
-Review workers use a separate actor identity and poll the review queue:
-
-```sh
-export TICKET_ACTOR=reviewer-1
-
-while true; do
-    ticket wait review --claim -j || exit 1
-    codex "Review the ticket currently assigned to this actor. Approve it if correct or return it to open with specific findings, then exit."
-done
-```
-
-Coding workers use `ticket wait --claim` because it understands actionable implementation work. Review workers currently select from the `review` queue explicitly.
+Agent orchestration is deliberately not built into `ticket`. For ticket-based orchestration consider [ticket-orc](https://github.com/toolsupply/ticket-orc).
 
 ## Source-control synchronization
 
@@ -436,17 +385,10 @@ In this configuration, Git synchronization performed by `ticket` advances the sa
 
 ## Building
 
-Toolchain: Go `1.24.4`. No CGO or third-party Go dependencies are required.
+Toolchain: Go `1.26.8`. No CGO or third-party Go dependencies are required.
 
 ```sh
-make build
-./bin/ticket version
-```
-
-Build with a commit stamp:
-
-```sh
-make LDFLAGS="-s -w -X ticket/internal/cli.Commit=$(git rev-parse HEAD)" build
+make build && ./bin/ticket version
 ```
 
 ## Tests

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 type recordedCommand struct {
@@ -80,7 +80,7 @@ func TestBackendCommandSemantics(t *testing.T) {
 	if err := git.Publish("/tickets"); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 7 {
+	if len(calls) != 9 {
 		t.Fatalf("git calls: %+v", calls)
 	}
 	if got := strings.Join(calls[0].args, " "); got != "rev-parse --show-toplevel" {
@@ -92,16 +92,22 @@ func TestBackendCommandSemantics(t *testing.T) {
 	if got := strings.Join(calls[2].args, " "); got != "pull --ff-only" {
 		t.Fatalf("git update args=%q", got)
 	}
-	if got := strings.Join(calls[3].args, " "); got != "add -- . :(exclude).local" {
+	if got := strings.Join(calls[3].args, " "); got != "add -- . :(exclude,glob)[.]local/**" {
 		t.Fatalf("git add args=%q", got)
 	}
-	if got := strings.Join(calls[4].args, " "); got != "diff --cached --quiet -- . :(exclude).local" {
+	if got := strings.Join(calls[4].args, " "); got != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" {
 		t.Fatalf("git pending args=%q", got)
 	}
-	if got := strings.Join(calls[5].args, " "); got != "commit --only -m ticket: update -- . :(exclude).local" {
+	if got := strings.Join(calls[5].args, " "); got != "commit --only -m ticket: update -- . :(exclude,glob)[.]local/**" {
 		t.Fatalf("git commit args=%q", got)
 	}
-	if got := strings.Join(calls[6].args, " "); got != "push" {
+	if got := strings.Join(calls[6].args, " "); got != "rev-parse --show-toplevel" {
+		t.Fatalf("git publish worktree args=%q", got)
+	}
+	if got := strings.Join(calls[7].args, " "); got != "rev-parse --abbrev-ref --symbolic-full-name @{u}" {
+		t.Fatalf("git publish upstream args=%q", got)
+	}
+	if got := strings.Join(calls[8].args, " "); got != "push" {
 		t.Fatalf("git publish args=%q", got)
 	}
 	for _, call := range calls {
@@ -237,7 +243,7 @@ func TestSVNCommitSchedulesOnlyExplicitMissingPaths(t *testing.T) {
 	}
 }
 
-func TestGitUpdateAllowsLocalRepositoryWithoutUpstream(t *testing.T) {
+func TestGitSynchronizationAllowsLocalRepositoryWithoutUpstream(t *testing.T) {
 	var calls []recordedCommand
 	noUpstream := errors.New("no upstream configured")
 	run := func(dir, name string, args ...string) ([]byte, error) {
@@ -251,13 +257,26 @@ func TestGitUpdateAllowsLocalRepositoryWithoutUpstream(t *testing.T) {
 	if err := newBackend("git", run).Update("/tickets"); err != nil {
 		t.Fatalf("local update: %v", err)
 	}
-	if len(calls) != 2 || strings.Join(calls[0].args, " ") != "rev-parse --show-toplevel" ||
-		strings.Join(calls[1].args, " ") != "rev-parse --abbrev-ref --symbolic-full-name @{u}" {
-		t.Fatalf("local update calls: %+v", calls)
+	if err := newBackend("git", run).Publish("/tickets"); err != nil {
+		t.Fatalf("local publish: %v", err)
+	}
+	want := []string{
+		"rev-parse --show-toplevel",
+		"rev-parse --abbrev-ref --symbolic-full-name @{u}",
+		"rev-parse --show-toplevel",
+		"rev-parse --abbrev-ref --symbolic-full-name @{u}",
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("local synchronization calls: %+v", calls)
+	}
+	for i, call := range calls {
+		if got := strings.Join(call.args, " "); got != want[i] {
+			t.Fatalf("local synchronization call %d=%q want %q", i, got, want[i])
+		}
 	}
 }
 
-func TestGitUpdateAllowsRealLocalRepositoryWithoutUpstream(t *testing.T) {
+func TestGitSynchronizationAllowsRealLocalRepositoryWithoutUpstream(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
@@ -273,6 +292,9 @@ func TestGitUpdateAllowsRealLocalRepositoryWithoutUpstream(t *testing.T) {
 	}
 	if err := newBackend("git", execCommand).Update(root); err != nil {
 		t.Fatalf("local Git repository update: %v", err)
+	}
+	if err := newBackend("git", execCommand).Publish(root); err != nil {
+		t.Fatalf("local Git repository publish: %v", err)
 	}
 }
 
@@ -298,63 +320,76 @@ func TestGitCommitRestrictsPaths(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
-	dir := t.TempDir()
-	root := filepath.Join(dir, "tickets")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runGit := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
+	for _, ignored := range []bool{false, true} {
+		name := "unignored"
+		if ignored {
+			name = "ignored"
 		}
-	}
-	runGit("init")
-	runGit("config", "user.email", "test@example.invalid")
-	runGit("config", "user.name", "Ticket Test")
-	if err := os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "TASK.md"), []byte("ticket\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit("add", ".")
-	runGit("commit", "-m", "initial")
-	if err := os.WriteFile(filepath.Join(dir, "source.txt"), []byte("unrelated\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "TASK.md"), []byte("ticket changed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(root, ".local"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".local", "current"), []byte("local\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit("add", "source.txt")
-	backend := newBackend("git", execCommand)
-	if err := backend.Commit(root, "ticket: update", []string{"."}); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("git", "show", "--format=", "--name-only", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(out)) != "tickets/TASK.md" {
-		t.Fatalf("committed paths=%q", out)
-	}
-	cmd = exec.Command("git", "diff", "--cached", "--name-only")
-	cmd.Dir = dir
-	out, err = cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(out)) != "source.txt" {
-		t.Fatalf("unrelated staged paths=%q", out)
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := filepath.Join(dir, "tickets")
+			if err := os.Mkdir(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			runGit := func(args ...string) {
+				cmd := exec.Command("git", args...)
+				cmd.Dir = dir
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, output)
+				}
+			}
+			runGit("init")
+			runGit("config", "user.email", "test@example.invalid")
+			runGit("config", "user.name", "Ticket Test")
+			if err := os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "TASK.md"), []byte("ticket\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if ignored {
+				if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".local/\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runGit("add", ".")
+			runGit("commit", "-m", "initial")
+			if err := os.WriteFile(filepath.Join(dir, "source.txt"), []byte("unrelated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "TASK.md"), []byte("ticket changed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, ".local"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".local", "current"), []byte("local\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit("add", "source.txt")
+			backend := newBackend("git", execCommand)
+			if err := backend.Commit(root, "ticket: update", []string{"."}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("git", "show", "--format=", "--name-only", "HEAD")
+			cmd.Dir = dir
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(out)) != "tickets/TASK.md" {
+				t.Fatalf("committed paths=%q", out)
+			}
+			cmd = exec.Command("git", "diff", "--cached", "--name-only")
+			cmd.Dir = dir
+			out, err = cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(out)) != "source.txt" {
+				t.Fatalf("unrelated staged paths=%q", out)
+			}
+		})
 	}
 }
 

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/markdown"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/markdown"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 type CloseOptions struct {

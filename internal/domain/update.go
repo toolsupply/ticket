@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/markdown"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/markdown"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // setFieldOrder is the deterministic changed_fields order for set keys.

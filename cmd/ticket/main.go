@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"ticket/internal/cli"
+	"github.com/toolsupply/ticket/internal/cli"
 )
 
 func main() {

@@ -9,6 +9,7 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  artifact-metadata: write
 
 jobs:
   build:
@@ -34,10 +35,10 @@ jobs:
             goarch: amd64
             archive: zip
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.8'
       - name: build and package
         shell: bash
         env:
@@ -52,7 +53,7 @@ jobs:
           binary=ticket
           if [ "$GOOS" = windows ]; then binary=ticket.exe; fi
           CGO_ENABLED=0 go build -trimpath \
-            -ldflags "-s -w -X ticket/internal/cli.Version=$version -X ticket/internal/cli.Commit=$GITHUB_SHA" \
+            -ldflags "-s -w -X github.com/toolsupply/ticket/internal/cli.Version=$version -X github.com/toolsupply/ticket/internal/cli.Commit=$GITHUB_SHA" \
             -o "$binary" ./cmd/ticket
           archive="ticket-$GOOS-$GOARCH"
           if [ "${{ matrix.archive }}" = zip ]; then
@@ -64,7 +65,7 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: release/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
           path: release/*
@@ -74,7 +75,7 @@ jobs:
     name: package ticket-tasks skill
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: package skill
         shell: bash
         run: |
@@ -87,7 +88,7 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: release/ticket-tasks.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-skill
           path: release/ticket-tasks.zip
@@ -98,7 +99,7 @@ jobs:
     needs: [build, skill]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: release
           pattern: release-*

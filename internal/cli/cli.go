@@ -15,9 +15,9 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // Public protocol versions.
@@ -31,12 +31,15 @@ const (
 var Version = "dev"
 
 // Commit is the optional build commit, settable at link time via
-// -ldflags "-X ticket/internal/cli.Commit=<sha>".
+// -ldflags "-X github.com/toolsupply/ticket/internal/cli.Commit=<sha>".
 var Commit = ""
 
 // Run executes one CLI invocation and returns the process exit code. Human
 // output is the default; -j/--json selects the compact JSON contract.
 func Run(args []string, out io.Writer) int {
+	if interactiveRequested(args) {
+		return runInteractive(args, out)
+	}
 	jsonOutput := jsonRequested(args)
 	var stdout bytes.Buffer
 	err := dispatch(args, &stdout)
@@ -128,6 +131,21 @@ func pageWithLess(data []byte) bool {
 // internal_error. Panics become bounded internal_error, never a false
 // success.
 func dispatch(args []string, stdout *bytes.Buffer) (err error) {
+	return dispatchWithInput(args, stdout, os.Stdin)
+}
+
+// dispatchWithInput executes one command with an invocation-local input
+// stream. A nil input means that the invocation has no stdin payload; a
+// non-nil reader is the only source available to commands that consume input.
+func dispatchWithInput(args []string, stdout *bytes.Buffer, input io.Reader) (err error) {
+	return dispatchWithSessionInput(args, stdout, nil, input, false)
+}
+
+func dispatchWithSession(args []string, stdout *bytes.Buffer, executor *sessionExecutor) (err error) {
+	return dispatchWithSessionInput(args, stdout, executor, nil, false)
+}
+
+func dispatchWithSessionInput(args []string, stdout *bytes.Buffer, executor *sessionExecutor, input io.Reader, inputProvided bool) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			debugFlag := scanFlag(args, "--debug")
@@ -138,11 +156,24 @@ func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 				fmt.Sprintf("Internal error: %v", r), nil)
 		}
 	}()
+	if executor != nil {
+		return dispatchWithGlobals(args, stdout, executor.globalOpts, executor, input, inputProvided)
+	}
 	g := globalOpts{json: jsonRequested(args), scopeName: strings.TrimSpace(os.Getenv("TICKET_SCOPE"))}
-	return dispatchWithGlobals(args, stdout, g)
+	return dispatchWithGlobals(args, stdout, g, nil, input, inputProvided)
 }
 
-func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) error {
+func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, executor *sessionExecutor, input io.Reader, inputProvided bool) error {
+	var session *sessionState
+	if executor != nil {
+		session = &executor.state
+		g = executor.globalOpts
+		g.json = jsonRequested(args)
+		g.debug = false
+		g.configExplicit = false
+		g.scopeExplicit = false
+		g.sessionBound = true
+	}
 	var err error
 	args, g, err = consumeLeadingGlobals(args, g)
 	if err != nil {
@@ -155,14 +186,26 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 	// Per-invocation state: never leak across dispatches.
 	helpFlag = false
 	helpSeen = false
-	ctx := &commandContext{stdout: stdout, cwd: cwd(), globalOpts: g}
+	commandCWD := cwd()
+	if executor != nil {
+		commandCWD = executor.cwd
+	}
+	var done <-chan struct{}
+	if executor != nil {
+		done = executor.done
+	}
+	ctx := &commandContext{stdout: stdout, cwd: commandCWD, globalOpts: g, session: session, executor: executor, done: done, input: input, inputProvided: inputProvided}
+	if inputProvided && (len(args) == 0 || !commandAcceptsInvocationInput(args[0])) {
+		return unexpectedInvocationInput("")
+	}
 	if len(args) == 0 {
 		if !ctx.json {
 			return emitCurrentSummaryOrHelp(ctx)
 		}
 		return emitTopLevelHelp(ctx)
 	}
-	name := args[0]
+	rawName := args[0]
+	name := canonicalCommand(rawName)
 	rest := args[1:]
 	switch name {
 	case "-h", "--help":
@@ -186,7 +229,7 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 			return contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --json.", nil)
 		}
 		g.json = true
-		return dispatchWithGlobals(rest, stdout, g)
+		return dispatchWithGlobals(rest, stdout, g, executor, input, inputProvided)
 	case "-la", "-al":
 		return cmdList(ctx, append([]string{"-l", "-a"}, rest...), true)
 	case "version":
@@ -196,17 +239,16 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 	case "init":
 		return cmdInit(ctx, rest)
 	case "create":
+		if rawName == "new" || rawName == "add" {
+			return cmdNew(ctx, rest)
+		}
 		return cmdCreate(ctx, rest)
 	case "delete":
 		return cmdDelete(ctx, rest)
 	case "bump":
 		return cmdBump(ctx, rest)
-	case "new":
-		return cmdNew(ctx, rest)
 	case "list":
-		return cmdList(ctx, rest, false)
-	case "ls":
-		return cmdList(ctx, rest, true)
+		return cmdList(ctx, rest, rawName == "ls")
 	case "grep":
 		return cmdGrep(ctx, rest)
 	case "ready":
@@ -245,8 +287,6 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 		})
 	case "approve":
 		return cmdApprove(ctx, rest)
-	case "accept":
-		return cmdApprove(ctx, rest)
 	case "reject":
 		return cmdReject(ctx, rest)
 	case "check":
@@ -262,35 +302,15 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts) erro
 	}
 }
 
-var objectFirstCommands = map[string]string{
-	"show":    "show",
-	"edit":    "edit",
-	"status":  "status",
-	"path":    "path",
-	"update":  "update",
-	"claim":   "claim",
-	"release": "release",
-	"submit":  "submit",
-	"hold":    "hold",
-	"open":    "open",
-	"review":  "review",
-	"state":   "state",
-	"close":   "close",
-	"approve": "approve",
-	"accept":  "approve",
-	"reject":  "reject",
-	"bump":    "bump",
-	"delete":  "delete",
+func commandAcceptsInvocationInput(name string) bool {
+	command, ok := commandInfo(name)
+	return ok && command.acceptsInvocationInput
 }
 
-var knownCommands = map[string]bool{
-	"version": true, "actor": true, "init": true, "create": true,
-	"new": true, "delete": true, "bump": true, "list": true, "ls": true,
-	"grep": true, "ready": true, "next": true, "wait": true, "show": true,
-	"edit": true, "submit": true, "hold": true, "open": true, "review": true, "status": true,
-	"path": true, "update": true, "state": true, "claim": true, "release": true,
-	"close": true, "approve": true, "accept": true, "reject": true,
-	"check": true, "help": true,
+func unexpectedInvocationInput(command string) error {
+	return contract.NewError(contract.ErrInvalidArgument,
+		"Request stdin is only supported by explicit stdin-consuming forms of create, update, release, reject, and close.",
+		nil)
 }
 
 func normalizeObjectFirst(args []string) ([]string, error) {
@@ -305,16 +325,16 @@ func normalizeObjectFirst(args []string) ([]string, error) {
 		return append(normalized, args[1:]...), nil
 	}
 	command := args[1]
-	canonical, ok := objectFirstCommands[command]
-	if !ok {
+	metadata, ok := commandInfo(command)
+	if !ok || !metadata.objectFirst {
 		message := "Object-first syntax supports only single-ticket commands."
-		if knownCommands[command] {
+		if knownCommand(command) {
 			message = "Command " + command + " cannot be used after a ticket ID."
 		}
 		return nil, contract.NewError(contract.ErrInvalidArgument, message, nil)
 	}
 	normalized := make([]string, 0, len(args)+1)
-	normalized = append(normalized, canonical, args[0])
+	normalized = append(normalized, metadata.name, args[0])
 	normalized = append(normalized, args[2:]...)
 	return normalized, nil
 }
@@ -339,6 +359,10 @@ func consumeLeadingGlobals(args []string, g globalOpts) ([]string, globalOpts, e
 			g.json = true
 			args = args[1:]
 		case arg == "-c" || arg == "--config":
+			if g.sessionBound {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument,
+					"Interactive sessions cannot use --config after startup.", nil)
+			}
 			if seenConfig {
 				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --config.", nil)
 			}
@@ -349,6 +373,10 @@ func consumeLeadingGlobals(args []string, g globalOpts) ([]string, globalOpts, e
 			g.configPath, g.configExplicit = args[1], true
 			args = args[2:]
 		case arg == "--scope":
+			if g.sessionBound {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument,
+					"Interactive sessions cannot use --scope after startup.", nil)
+			}
 			if seenScope {
 				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --scope.", nil)
 			}
@@ -359,6 +387,10 @@ func consumeLeadingGlobals(args []string, g globalOpts) ([]string, globalOpts, e
 			g.scopeName, g.scopeExplicit = args[1], true
 			args = args[2:]
 		case strings.HasPrefix(arg, "--config="):
+			if g.sessionBound {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument,
+					"Interactive sessions cannot use --config after startup.", nil)
+			}
 			if seenConfig {
 				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --config.", nil)
 			}
@@ -366,6 +398,10 @@ func consumeLeadingGlobals(args []string, g globalOpts) ([]string, globalOpts, e
 			g.configPath, g.configExplicit = strings.TrimPrefix(arg, "--config="), true
 			args = args[1:]
 		case strings.HasPrefix(arg, "--scope="):
+			if g.sessionBound {
+				return nil, g, contract.NewError(contract.ErrInvalidArgument,
+					"Interactive sessions cannot use --scope after startup.", nil)
+			}
 			if seenScope {
 				return nil, g, contract.NewError(contract.ErrInvalidArgument, "Duplicate flag --scope.", nil)
 			}

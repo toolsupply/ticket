@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/markdown"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/markdown"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // TaskMaxBytes is the managed TASK.md ceiling.

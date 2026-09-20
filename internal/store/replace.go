@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 // ReplaceTask validates the current TASK.md, writes a complete temporary

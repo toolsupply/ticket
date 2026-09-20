@@ -29,6 +29,11 @@ Preserve these invariants:
 * Work selection belongs to `next` / `wait`; do not reconstruct scheduler logic with `list`.
 * Review selection belongs to the review queue; reviewers do not close tickets.
 * Handoff is replaceable current context. Work log is append-only history.
+* Persistent JSON mode (`-i -j`) is a strict request/response protocol:
+  one nonblank JSON request line produces one JSON response, with no unsolicited output.
+* Preserve framing recovery, bounded request-local stdin, and mutation uncertainty metadata unless
+  explicitly asked to work on the protocol with regressions accepted.
+* Clients establish stream readiness with a successful `version` request; startup errors before that are startup failures.
 
 Do not weaken path, symlink, traversal, locking, or atomic-write checks for convenience.
 
@@ -111,7 +116,7 @@ Do not broaden scope while doing release-polish work.
 Before considering work complete, run the relevant checks:
 
 ```sh
-gofmt
+go fmt ./...
 go test ./...
 go test -race ./...
 go vet ./...

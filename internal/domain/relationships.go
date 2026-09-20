@@ -2,9 +2,9 @@ package domain
 
 import (
 	"errors"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/store"
 	"strings"
-	"ticket/internal/contract"
-	"ticket/internal/store"
 )
 
 // validateGraphCandidate validates parent and dependency cycles after a

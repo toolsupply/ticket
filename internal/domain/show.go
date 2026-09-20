@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/identity"
-	"ticket/internal/markdown"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/identity"
+	"github.com/toolsupply/ticket/internal/markdown"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // DefaultSectionBudget is the default budget for returned section text.

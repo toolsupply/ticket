@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/store"
-	"ticket/internal/testutil"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/testutil"
 )
 
 // testEnv opens a repository with deterministic IDs.

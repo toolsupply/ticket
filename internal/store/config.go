@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"ticket/internal/contract"
-	"ticket/internal/jsonx"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/jsonx"
 )
 
 // Config is the committed repository format configuration.

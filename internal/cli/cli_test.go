@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
 )
 
 // runCLI executes one invocation with cwd and captures stdout.
@@ -247,6 +247,9 @@ func TestBareTicketShowsAuthoritativeCurrentSummary(t *testing.T) {
 	t.Setenv("TICKET_ROOT", "")
 	mustCLI(t, "init")
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Current summary", "Show current context."))["id"].(string)
+	if _, code := runCLIHuman(t, "show", id); code != 0 {
+		t.Fatalf("select current ticket: exit=%d", code)
+	}
 	if out, code := runCLIHuman(t); code != 0 || out != id+"  open  Current summary\n" {
 		t.Fatalf("bare current summary: exit=%d out=%q", code, out)
 	}
@@ -296,6 +299,9 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 	}
 	if strings.Contains(topLevelHelp, "\n  ready ") {
 		t.Fatalf("ready should be hidden from top-level help: %q", topLevelHelp)
+	}
+	if strings.Contains(topLevelHelp, "Interactive shell:") || strings.Contains(topLevelHelp, "-i, --interactive") {
+		t.Fatalf("top-level help should not document interactive mode: %q", topLevelHelp)
 	}
 	out, code := runCLI(t, "help")
 	if code != 0 {
@@ -418,10 +424,20 @@ func TestGlobalOptionsHelpAndDebugPlacement(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("options help: exit=%d out=%q", code, out)
 	}
-	for _, want := range []string{"-c, --config", "--scope", "-j, --json", "-h, --help", "--debug", "stack trace"} {
+	for _, want := range []string{"-c, --config", "--scope", "-i, --interactive", "-j, --json", "-h, --help", "--debug", "stack trace", "$ ticket --config ~/.config/ticket/config.json list"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("options help missing %q: %q", want, out)
 		}
+	}
+	if strings.Contains(out, "$ ticket -i") || strings.Contains(out, "$ ticket --interactive") {
+		t.Fatalf("options help should not list interactive examples: %q", out)
+	}
+	optionsSection := strings.SplitN(out, "Options:\n", 2)
+	if len(optionsSection) != 2 || !strings.HasPrefix(optionsSection[1], "  --scope") {
+		t.Fatalf("options help should list --scope first: %q", out)
+	}
+	if strings.Contains(out, "-j -i") || strings.Contains(out, "promptless") || strings.Contains(out, "newline-delimited") {
+		t.Fatalf("options help should not document interactive JSON streaming: %q", out)
 	}
 	jsonOut, code := runCLI(t, "help", "options")
 	if code != 0 {
@@ -568,13 +584,16 @@ func TestSCMLifecycleWrapsRepositoryCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 7 || !strings.HasSuffix(lines[0], "|rev-parse --show-toplevel") ||
+	if len(lines) != 9 || !strings.HasSuffix(lines[0], "|rev-parse --show-toplevel") ||
 		strings.HasSuffix(lines[1], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") == false ||
 		!strings.HasSuffix(lines[2], "|pull --ff-only") ||
-		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- . :(exclude).local" ||
-		!strings.Contains(lines[4], "|diff --cached --quiet -- . :(exclude).local") ||
+		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- . :(exclude,glob)[.]local/**" ||
+		!strings.Contains(lines[4], "|diff --cached --quiet -- . :(exclude,glob)[.]local/**") ||
 		!strings.Contains(lines[5], "|commit --only -m ticket: create ") ||
-		!strings.HasSuffix(lines[5], " -- . :(exclude).local") || !strings.HasSuffix(lines[6], "|push") {
+		!strings.HasSuffix(lines[5], " -- . :(exclude,glob)[.]local/**") ||
+		!strings.HasSuffix(lines[6], "|rev-parse --show-toplevel") ||
+		!strings.HasSuffix(lines[7], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") ||
+		!strings.HasSuffix(lines[8], "|push") {
 		t.Fatalf("create SCM lifecycle: %q", string(data))
 	}
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
@@ -590,13 +609,16 @@ func TestSCMLifecycleWrapsRepositoryCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines = strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 7 || !strings.HasSuffix(lines[0], "|rev-parse --show-toplevel") ||
+	if len(lines) != 9 || !strings.HasSuffix(lines[0], "|rev-parse --show-toplevel") ||
 		!strings.HasSuffix(lines[1], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") ||
 		!strings.HasSuffix(lines[2], "|pull --ff-only") ||
-		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- . :(exclude).local" ||
-		!strings.Contains(lines[4], "|diff --cached --quiet -- . :(exclude).local") ||
+		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- . :(exclude,glob)[.]local/**" ||
+		!strings.Contains(lines[4], "|diff --cached --quiet -- . :(exclude,glob)[.]local/**") ||
 		!strings.Contains(lines[5], "|commit --only -m ticket: next ") ||
-		!strings.HasSuffix(lines[5], " -- . :(exclude).local") || !strings.HasSuffix(lines[6], "|push") {
+		!strings.HasSuffix(lines[5], " -- . :(exclude,glob)[.]local/**") ||
+		!strings.HasSuffix(lines[6], "|rev-parse --show-toplevel") ||
+		!strings.HasSuffix(lines[7], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") ||
+		!strings.HasSuffix(lines[8], "|push") {
 		t.Fatalf("next SCM lifecycle: %q", string(data))
 	}
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
@@ -642,13 +664,15 @@ func TestSCMRetryPublishesPendingMutationAfterPushFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 13 || lines[0] != "rev-parse --show-toplevel" ||
+	if len(lines) != 17 || lines[0] != "rev-parse --show-toplevel" ||
 		lines[1] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[2] != "pull --ff-only" ||
-		lines[3] != "add -- . :(exclude).local" || lines[4] != "diff --cached --quiet -- . :(exclude).local" ||
-		!strings.HasPrefix(lines[5], "commit --only -m ticket: claim ") || lines[6] != "push" ||
-		lines[7] != "rev-parse --show-toplevel" || lines[8] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
-		lines[9] != "pull --ff-only" || lines[10] != "add -- . :(exclude).local" ||
-		lines[11] != "diff --cached --quiet -- . :(exclude).local" || lines[12] != "push" {
+		lines[3] != "add -- . :(exclude,glob)[.]local/**" || lines[4] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
+		!strings.HasPrefix(lines[5], "commit --only -m ticket: claim ") ||
+		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[8] != "push" ||
+		lines[9] != "rev-parse --show-toplevel" || lines[10] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
+		lines[11] != "pull --ff-only" || lines[12] != "add -- . :(exclude,glob)[.]local/**" ||
+		lines[13] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
+		lines[14] != "rev-parse --show-toplevel" || lines[15] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[16] != "push" {
 		t.Fatalf("pending publish lifecycle: %q", string(data))
 	}
 }
@@ -681,14 +705,15 @@ func TestSCMRetryCommitsPendingMutationAfterCommitFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 13 || lines[0] != "rev-parse --show-toplevel" ||
+	if len(lines) != 15 || lines[0] != "rev-parse --show-toplevel" ||
 		lines[1] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[2] != "pull --ff-only" ||
-		lines[3] != "add -- . :(exclude).local" || lines[4] != "diff --cached --quiet -- . :(exclude).local" ||
-		lines[5] != "commit --only -m ticket: claim "+id+" -- . :(exclude).local" ||
+		lines[3] != "add -- . :(exclude,glob)[.]local/**" || lines[4] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
+		lines[5] != "commit --only -m ticket: claim "+id+" -- . :(exclude,glob)[.]local/**" ||
 		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
-		lines[8] != "pull --ff-only" || lines[9] != "add -- . :(exclude).local" ||
-		lines[10] != "diff --cached --quiet -- . :(exclude).local" ||
-		lines[11] != "commit --only -m ticket: claim "+id+" -- . :(exclude).local" || lines[12] != "push" {
+		lines[8] != "pull --ff-only" || lines[9] != "add -- . :(exclude,glob)[.]local/**" ||
+		lines[10] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
+		lines[11] != "commit --only -m ticket: claim "+id+" -- . :(exclude,glob)[.]local/**" ||
+		lines[12] != "rev-parse --show-toplevel" || lines[13] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[14] != "push" {
 		t.Fatalf("pending commit lifecycle: %q", string(data))
 	}
 }
@@ -815,6 +840,59 @@ func TestInteractiveCreateSCMFailureReportsCreatedTicket(t *testing.T) {
 	}
 	if !strings.Contains(ce.Message, "TICKET_CURRENT still selects external-current") {
 		t.Fatalf("SCM failure lost environment-current diagnostic: %q", ce.Message)
+	}
+}
+
+func TestSessionEditorCreateSCMFailureSelectsCreatedTicket(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	previous := exactlyOneJSONObject(t, mustCLI(t, "create", "Persistent marker", "Keep this human selection."))["id"].(string)
+	if _, code := runCLIHuman(t, "show", previous); code != 0 {
+		t.Fatalf("select persistent current: exit=%d", code)
+	}
+	marker := filepath.Join(dir, "tickets", ".local", "current")
+	before, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := "scm-push-retry-editor-write"
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), mode)
+	installFakeSCM(t, filepath.Join(dir, "bin"), mode)
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TEST_EDITOR_BODY", "---\nstate: hold\npriority: 2\n---\n# Session persisted\n\n## Objective\n\nSelect the created ticket after SCM failure.\n")
+	t.Setenv("SCM_LOG", filepath.Join(dir, "scm.log"))
+	t.Setenv("SCM_STATE", filepath.Join(dir, "scm-committed"))
+	t.Setenv("FAIL_PUSH", "1")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	t.Setenv("TICKET_CURRENT", "external-current")
+
+	session := &sessionState{current: previous}
+	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}, session: session}
+	err = createWithEditor(ctx, domain.CreateOptions{Title: "Session persisted", Priority: 2})
+	ce, ok := err.(*contract.Error)
+	if !ok || ce.Code != contract.ErrIOError {
+		t.Fatalf("session SCM failure: %v", err)
+	}
+	id, ok := ce.Details["id"].(string)
+	if !ok || id == "" || ce.Details["mutation_applied"] != true {
+		t.Fatalf("session SCM failure details: %v", ce.Details)
+	}
+	if session.current != id {
+		t.Fatalf("session current=%q want created ticket %q", session.current, id)
+	}
+	if !strings.Contains(ce.Message, "Session current ticket is now "+id) || strings.Contains(ce.Message, "TICKET_CURRENT") {
+		t.Fatalf("session SCM failure diagnostic: %q", ce.Message)
+	}
+	after, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("session SCM failure changed persistent current: before=%q after=%q", before, after)
 	}
 }
 
@@ -1020,7 +1098,7 @@ func TestCreateObjectiveArgumentAndEdit(t *testing.T) {
 	}
 }
 
-func TestNewWithoutArgumentsOpensEditor(t *testing.T) {
+func TestNewAndAddWithoutArgumentsOpenEditor(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if out, code := runCLI(t, "init"); code != 0 {
@@ -1030,14 +1108,16 @@ func TestNewWithoutArgumentsOpensEditor(t *testing.T) {
 	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-write")
 	t.Setenv("TEST_EDITOR_BODY", contents)
 	t.Setenv("EDITOR", editor)
-	out, code := runCLIHuman(t, "new")
-	if code != 0 || !strings.HasPrefix(out, "created ") {
-		t.Fatalf("new without arguments: exit=%d out=%q", code, out)
-	}
-	id := strings.Fields(out)[1]
-	show := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
-	if !strings.Contains(show["body"].(string), "# Filled in title\n") || !strings.Contains(show["body"].(string), "Fill in the objective.") {
-		t.Fatalf("edited new ticket: %v", show["body"])
+	for _, command := range []string{"new", "add"} {
+		out, code := runCLIHuman(t, command)
+		if code != 0 || !strings.HasPrefix(out, "created ") {
+			t.Fatalf("%s without arguments: exit=%d out=%q", command, code, out)
+		}
+		id := strings.Fields(out)[1]
+		show := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+		if !strings.Contains(show["body"].(string), "# Filled in title\n") || !strings.Contains(show["body"].(string), "Fill in the objective.") {
+			t.Fatalf("edited %s ticket: %v", command, show["body"])
+		}
 	}
 }
 
@@ -1152,6 +1232,9 @@ func TestHumanCommandsUseCurrentTicketButJSONStaysExplicit(t *testing.T) {
 		t.Fatalf("init: exit=%d out=%q", code, out)
 	}
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Current ticket"))["id"].(string)
+	if _, code := runCLIHuman(t, "show", id); code != 0 {
+		t.Fatalf("select current ticket: exit=%d", code)
+	}
 	status, code := runCLIHuman(t, "status")
 	if code != 0 || !strings.Contains(status, id) {
 		t.Fatalf("status without ID: exit=%d out=%q", code, status)
@@ -1677,14 +1760,16 @@ func TestCreatePipedBodyAndAliases(t *testing.T) {
 		t.Fatalf("empty piped create: exit=%d out=%q", code, out)
 	}
 
-	// The aliases use the same implementations and body handling.
-	out, code = runCLIStdin(t, "## Objective\n\nAlias body.\n", "new", "Alias ticket")
-	if code != 0 {
-		t.Fatalf("new: exit=%d out=%q", code, out)
-	}
-	aliasID := exactlyOneJSONObject(t, out)["id"].(string)
-	if !strings.Contains(exactlyOneJSONObject(t, mustCLI(t, "show", aliasID, "--full"))["body"].(string), "Alias body.") {
-		t.Fatalf("new body missing")
+	// The aliases use the same implementation and body handling.
+	for _, command := range []string{"new", "add"} {
+		out, code = runCLIStdin(t, "## Objective\n\nAlias body.\n", command, "Alias ticket")
+		if code != 0 {
+			t.Fatalf("%s: exit=%d out=%q", command, code, out)
+		}
+		aliasID := exactlyOneJSONObject(t, out)["id"].(string)
+		if !strings.Contains(exactlyOneJSONObject(t, mustCLI(t, "show", aliasID, "--full"))["body"].(string), "Alias body.") {
+			t.Fatalf("%s body missing", command)
+		}
 	}
 	if out, code = runCLI(t, "ls"); code != 0 || !strings.Contains(out, "\"items\"") {
 		t.Fatalf("ls: exit=%d out=%q", code, out)

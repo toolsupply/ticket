@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 // F1: IDs are validated at domain entry points. A traversal-shaped ID

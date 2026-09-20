@@ -19,10 +19,10 @@ jobs:
           - macos-latest
           - windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.8'
       - name: test
         run: go test ./...
       - name: vet
@@ -32,10 +32,10 @@ jobs:
     name: race (linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.8'
       - name: race test
         run: go test -race ./...
 
@@ -43,17 +43,16 @@ jobs:
     name: format and dependency check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.8'
       - name: gofmt
         shell: bash
         run: test -z "$(gofmt -l .)"
       - name: standard library dependency check
         shell: bash
-        run: |
-          test -z "$(go list -deps ./... | grep -E '^(github\.com/|golang\.org/|gopkg\.in/)' || true)"
+        run: test "$(go list -m all | wc -l)" -eq 1
 
   cross-build:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -73,15 +72,15 @@ jobs:
           - goos: windows
             goarch: amd64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.8'
       - name: cross-build
         shell: bash
         run: |
           version="$(tr -d '\r\n' < VERSION)"
           out=ticket
-          if [ "$GOOS" = windows ]; then out=ticket.exe; fi
+          if [ "${{ matrix.goos }}" = windows ]; then out=ticket.exe; fi
           CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
-            go build -trimpath -ldflags "-s -w -X ticket/internal/cli.Version=$version" -o "$out" ./cmd/ticket
+            go build -trimpath -ldflags "-s -w -X github.com/toolsupply/ticket/internal/cli.Version=$version" -o "$out" ./cmd/ticket

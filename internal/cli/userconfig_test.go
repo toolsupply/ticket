@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 func writeJSONConfig(t *testing.T, value any) string {

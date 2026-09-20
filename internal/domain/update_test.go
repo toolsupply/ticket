@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 // fileBody returns the complete TASK.md; new tickets have no metadata.

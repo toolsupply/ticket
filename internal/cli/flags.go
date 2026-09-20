@@ -6,7 +6,7 @@ package cli
 import (
 	"strconv"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 type flagKind int

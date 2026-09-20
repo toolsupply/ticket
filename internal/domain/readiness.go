@@ -3,8 +3,8 @@ package domain
 import (
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // ReadinessBlocker describes one reason a ticket cannot be claimed.

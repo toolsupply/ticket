@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 func TestGraphMutationRejectsDirectAndTransitiveCycles(t *testing.T) {

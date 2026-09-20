@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 func seedDeleteTicket(t *testing.T) (*Store, string, []byte) {

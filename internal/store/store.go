@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/identity"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/identity"
 )
 
 // Store is a locked handle on one ticket repository.

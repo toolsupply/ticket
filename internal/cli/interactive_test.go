@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 type interactiveResult struct {

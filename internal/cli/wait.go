@@ -3,9 +3,9 @@ package cli
 import (
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 const (
@@ -60,6 +60,9 @@ func waitForNext(ctx *commandContext, opts domain.NextOptions) error {
 	}
 	lastRefresh := time.Now()
 	for {
+		if sessionInterrupted(ctx.done) {
+			return errSessionInterrupted
+		}
 		result, root, err := attemptWait(ctx, opts)
 		if err != nil {
 			return err
@@ -81,7 +84,18 @@ func waitForNext(ctx *commandContext, opts domain.NextOptions) error {
 			continue
 		}
 		for {
-			time.Sleep(waitPollInterval)
+			timer := time.NewTimer(waitPollInterval)
+			select {
+			case <-timer.C:
+			case <-ctx.done:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return errSessionInterrupted
+			}
 			current, readErr := store.ChangeState(root)
 			if readErr != nil {
 				return contract.NewError(contract.ErrIOError, "Cannot inspect ticket change marker: "+readErr.Error(), nil)
@@ -92,6 +106,18 @@ func waitForNext(ctx *commandContext, opts domain.NextOptions) error {
 				break
 			}
 		}
+	}
+}
+
+func sessionInterrupted(done <-chan struct{}) bool {
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -117,7 +143,7 @@ func attemptWait(ctx *commandContext, opts domain.NextOptions) (*domain.NextResu
 			_ = st.SignalChange()
 		}
 	}
-	rememberCurrentTicket(st, result)
+	rememberCurrentTicket(ctx, st, result)
 	return result, root, nil
 }
 

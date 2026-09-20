@@ -3,8 +3,8 @@ package domain
 import (
 	"regexp"
 
-	"ticket/internal/contract"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // Grep finds tickets for which every expression matches either the ticket ID

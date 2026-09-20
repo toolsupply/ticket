@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 func TestReadTicketAcceptsManagedFileAtLimit(t *testing.T) {

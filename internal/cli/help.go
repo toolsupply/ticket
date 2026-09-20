@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 const topLevelHelp = `
@@ -72,8 +72,9 @@ var optionsHelpCommand = contract.Command{
 	Name:    "options",
 	Summary: "Show global and common CLI options.",
 	Options: []contract.Flag{
-		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
 		{Name: "--scope", Kind: "name", Description: "Use a named configuration scope."},
+		{Name: "-c, --config", Kind: "file", Description: "Use an alternate user config file."},
+		{Name: "-i, --interactive", Kind: "bool", Description: "Start the line-oriented shell."},
 		{Name: "-j, --json", Kind: "bool", Description: "Use compact JSON output for success and errors."},
 		{Name: "-h, --help", Kind: "bool", Description: "Show help for this command."},
 		{Name: "--debug", Kind: "bool", Description: "Print a stack trace if an unexpected internal error occurs; no effect on successful commands."},
@@ -264,7 +265,7 @@ func cmdHelp(ctx *commandContext, args []string) error {
 		return contract.NewError(contract.ErrInvalidArgument, "Command help accepts at most one command name.", nil)
 	}
 	name := p.positionals[0]
-	if name == "new" {
+	if name == "new" || name == "add" {
 		name = "create"
 	} else if name == "ls" {
 		name = "list"

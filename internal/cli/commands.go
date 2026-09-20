@@ -5,14 +5,15 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
-	"ticket/internal/scm"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/scm"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // globalOpts are the flags accepted on every command.
@@ -27,6 +28,8 @@ type globalOpts struct {
 	configLoaded   bool
 	config         userConfig
 	scope          *scopeConfig
+	rootOverride   string
+	sessionBound   bool
 }
 
 func (g *globalOpts) register(p *parser) {
@@ -43,6 +46,18 @@ func (g *globalOpts) registerWithoutActor(p *parser) {
 }
 
 func (g *globalOpts) registerConfig(p *parser) {
+	if g.sessionBound {
+		p.flag("config", kindString, func(string) error {
+			return contract.NewError(contract.ErrInvalidArgument,
+				"Interactive sessions cannot use --config after startup.", nil)
+		}, false)
+		p.alias("c", "config")
+		p.flag("scope", kindString, func(string) error {
+			return contract.NewError(contract.ErrInvalidArgument,
+				"Interactive sessions cannot use --scope after startup.", nil)
+		}, false)
+		return
+	}
 	p.flag("config", kindString, func(value string) error {
 		if g.configExplicit {
 			return duplicateFlag("config")
@@ -97,9 +112,14 @@ func (g *globalOpts) effectiveActor() (actor, source string) {
 
 // commandContext carries the invocation through one command.
 type commandContext struct {
-	stdout   *bytes.Buffer
-	cwd      string
-	markdown bool
+	stdout        *bytes.Buffer
+	cwd           string
+	input         io.Reader
+	inputProvided bool
+	markdown      bool
+	session       *sessionState
+	executor      *sessionExecutor
+	done          <-chan struct{}
 	globalOpts
 }
 
@@ -153,7 +173,7 @@ func runRepoCommandMode(ctx *commandContext, cmd string, mutation bool, fn func(
 		_ = st.SignalChange()
 	}
 	normalizeShowPaths(ctx, res)
-	rememberCurrentTicket(st, res)
+	rememberCurrentTicket(ctx, st, res)
 	if !ctx.json {
 		return renderHumanTo(stdout, cmd, res, ctx.markdown, ctx.decorator())
 	}
@@ -338,12 +358,8 @@ func changedResultID(result any) string {
 }
 
 func mutationCommand(command string) bool {
-	switch command {
-	case "create", "new", "delete", "bump", "edit", "update", "claim", "release", "submit", "hold", "open", "review", "state", "approve", "reject", "close":
-		return true
-	default:
-		return false
-	}
+	metadata, ok := commandInfo(command)
+	return ok && metadata.mutation
 }
 
 func commitMessage(command string, result any) string {
@@ -408,6 +424,13 @@ func resolveTicketRef(st *store.Store, ctx *commandContext, ref, command string)
 		return "", contract.NewError(contract.ErrInvalidArgument,
 			"Command "+command+" requires an ID in JSON mode.", nil)
 	}
+	if ctx.session != nil {
+		if ctx.session.current != "" {
+			return ctx.session.current, nil
+		}
+		return "", contract.NewError(contract.ErrInvalidArgument,
+			"Command "+command+" requires an ID; no current ticket is set.", nil)
+	}
 	if current := strings.TrimSpace(os.Getenv("TICKET_CURRENT")); current != "" {
 		return current, nil
 	}
@@ -429,8 +452,13 @@ func emitCurrentSummaryOrHelp(ctx *commandContext) error {
 		return err
 	}
 	defer st.Close()
-	ref := strings.TrimSpace(os.Getenv("TICKET_CURRENT"))
-	if ref == "" {
+	ref := ""
+	if ctx.session != nil {
+		ref = ctx.session.current
+	} else {
+		ref = strings.TrimSpace(os.Getenv("TICKET_CURRENT"))
+	}
+	if ref == "" && ctx.session == nil {
 		data, readErr := os.ReadFile(filepath.Join(st.Root, ".local", "current"))
 		if readErr == nil {
 			ref = strings.TrimSpace(string(data))
@@ -454,7 +482,22 @@ func emitCurrentSummaryOrHelp(ctx *commandContext) error {
 	}, false)
 }
 
-func rememberCurrentTicket(st *store.Store, result any) {
+func rememberCurrentTicket(ctx *commandContext, st *store.Store, result any) {
+	if ctx.json {
+		return
+	}
+	id := currentTicketID(result)
+	if id == "" {
+		return
+	}
+	if ctx.session != nil {
+		ctx.session.current = id
+		return
+	}
+	_ = st.RememberCurrent(id)
+}
+
+func currentTicketID(result any) string {
 	var id string
 	switch value := result.(type) {
 	case *domain.CreateResult:
@@ -480,7 +523,5 @@ func rememberCurrentTicket(st *store.Store, result any) {
 	case map[string]string:
 		id = value["id"]
 	}
-	if id != "" {
-		_ = st.RememberCurrent(id)
-	}
+	return id
 }

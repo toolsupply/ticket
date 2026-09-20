@@ -1,8 +1,8 @@
 package domain
 
 import (
-	"ticket/internal/contract"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // ClaimOptions contains the actor performing the claim.

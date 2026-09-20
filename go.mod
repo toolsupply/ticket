@@ -1,3 +1,3 @@
-module ticket
+module github.com/toolsupply/ticket
 
-go 1.24.4
+go 1.26.8

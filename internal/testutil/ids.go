@@ -8,7 +8,7 @@ package testutil
 import (
 	"fmt"
 
-	"ticket/internal/identity"
+	"github.com/toolsupply/ticket/internal/identity"
 )
 
 // DeterministicSource issues reproducible IDs from a fixed seed. It is for

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 func workflowTicket(t *testing.T, e *testEnv, title string) string {

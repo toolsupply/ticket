@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 // lock.go: bounded advisory locking over the ticket root's .local/lock

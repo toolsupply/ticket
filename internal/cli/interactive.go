@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
 )
 
 // createWithEditor keeps the draft outside the managed ticket collection
@@ -32,32 +32,34 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 		st.Close()
 		return err
 	}
-	if err := st.ClearCurrent(); err != nil {
-		st.Close()
-		return preserveCreateDraftError(err, draftPath)
+	if ctx.session == nil {
+		if err := st.ClearCurrent(); err != nil {
+			st.Close()
+			return preserveCreateDraftError(ctx, err, draftPath)
+		}
 	}
 	st.Close()
 
-	draft, err := editDraft(draftPath, "", objectiveEditLine(starterTicket), &ctx.globalOpts)
+	draft, err := editDraft(draftPath, "", objectiveEditLine(starterTicket), ctx.session == nil, &ctx.globalOpts)
 	if err != nil {
-		return preserveCreateDraftError(err, draftPath)
+		return preserveCreateDraftError(ctx, err, draftPath)
 	}
 
 	st, backend, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
-		return preserveCreateDraftError(err, draftPath)
+		return preserveCreateDraftError(ctx, err, draftPath)
 	}
 	defer st.Close()
 	res, err := domain.CreateFromDraft(st, draft)
 	if err != nil {
-		return preserveCreateDraftError(err, draftPath)
+		return preserveCreateDraftError(ctx, err, draftPath)
 	}
 	if err := persistMutation(backend, st, "create", res); err != nil {
-		return preserveCreateDraftError(err, draftPath)
+		return preserveCreateDraftError(ctx, err, draftPath)
 	}
 	_ = st.SignalChange()
 	_ = os.Remove(draftPath)
-	rememberCurrentTicket(st, res)
+	rememberCurrentTicket(ctx, st, res)
 	return renderHumanTo(ctx.stdout, "create", res, false, ctx.decorator())
 }
 
@@ -90,7 +92,7 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		return err
 	}
 
-	draft, err := editDraft(draftPath, full, objectiveEditLine(beforeTicket), &ctx.globalOpts)
+	draft, err := editDraft(draftPath, full, objectiveEditLine(beforeTicket), ctx.session == nil, &ctx.globalOpts)
 	if err != nil {
 		return err
 	}
@@ -121,7 +123,7 @@ func editWithEditor(ctx *commandContext, ref string) error {
 	}
 	_ = st.SignalChange()
 	_ = os.Remove(draftPath)
-	rememberCurrentTicket(st, res)
+	rememberCurrentTicket(ctx, st, res)
 	return renderHumanTo(ctx.stdout, "edit", res, false, ctx.decorator())
 }
 
@@ -162,7 +164,7 @@ func createDraft(root string, data []byte) (string, error) {
 	return path, nil
 }
 
-func editDraft(path, id string, line int, configs ...*globalOpts) (*domain.Ticket, error) {
+func editDraft(path, id string, line int, allowRetry bool, configs ...*globalOpts) (*domain.Ticket, error) {
 	for {
 		command, args, err := editorInvocation(selectedEditor(configs...), path, line)
 		if err != nil {
@@ -185,21 +187,24 @@ func editDraft(path, id string, line int, configs ...*globalOpts) (*domain.Ticke
 		if err == nil {
 			return ticket, nil
 		}
-		if retryEditor(err) {
+		if allowRetry && retryEditor(err, nil) {
 			continue
 		}
 		return nil, preserveDraftError(err, path)
 	}
 }
 
-func retryEditor(err error) bool {
+func retryEditor(err error, input *bufio.Reader) bool {
 	message := err.Error()
 	var ce *contract.Error
 	if errors.As(err, &ce) {
 		message = humanErrorMessage(ce)
 	}
 	fmt.Fprintf(os.Stderr, "error: %s\nContinue editing? [Y/n] ", message)
-	answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
+	if input == nil {
+		input = bufio.NewReader(os.Stdin)
+	}
+	answer, readErr := input.ReadString('\n')
 	fmt.Fprintln(os.Stderr)
 	if readErr != nil && strings.TrimSpace(answer) == "" {
 		return false
@@ -223,16 +228,33 @@ func preserveDraftError(err error, path string) error {
 	return contract.NewError(contract.ErrIOError, err.Error()+" Edited draft preserved at: "+path, nil)
 }
 
-func preserveCreateDraftError(err error, path string) error {
+func preserveCreateDraftError(ctx *commandContext, err error, path string) error {
 	wrapped := preserveDraftError(err, path)
 	var ce *contract.Error
 	if errors.As(wrapped, &ce) {
 		if applied, _ := ce.Details["mutation_applied"].(bool); applied {
-			return contract.NewError(ce.Code, ce.Message+" Reconcile SCM persistence before retrying; do not create another ticket."+currentSelectionDiagnostic(), ce.Details)
+			id, _ := ce.Details["id"].(string)
+			if ctx.session != nil && id != "" {
+				ctx.session.current = id
+			}
+			return contract.NewError(ce.Code, ce.Message+" Reconcile SCM persistence before retrying; do not create another ticket."+createSelectionDiagnostic(ctx, true, id), ce.Details)
 		}
-		return contract.NewError(ce.Code, ce.Message+" No ticket was created."+currentSelectionDiagnostic(), ce.Details)
+		return contract.NewError(ce.Code, ce.Message+" No ticket was created."+createSelectionDiagnostic(ctx, false, ""), ce.Details)
 	}
 	return wrapped
+}
+
+func createSelectionDiagnostic(ctx *commandContext, applied bool, id string) string {
+	if ctx.session == nil {
+		return currentSelectionDiagnostic()
+	}
+	if applied && id != "" {
+		return " Session current ticket is now " + id + "."
+	}
+	if ctx.session.current != "" {
+		return " Session current ticket remains " + ctx.session.current + "."
+	}
+	return " Session current ticket remains unset."
 }
 
 func currentSelectionDiagnostic() string {

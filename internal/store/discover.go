@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 // Discover resolves the ticket root by walking upward from cwd and checking

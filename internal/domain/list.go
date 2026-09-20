@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/identity"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/identity"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 const (

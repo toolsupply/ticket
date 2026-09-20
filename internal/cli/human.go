@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
 )
 
 // renderHumanTo writes compact human output for a successful command result.
@@ -205,7 +205,7 @@ func decoratorCommand(cmd string) bool {
 }
 
 func runMarkdownDecorator(stdout *bytes.Buffer, executable string, markdown []byte) error {
-	args, err := splitDecoratorCommand(executable)
+	args, err := splitCommandLine(executable)
 	if err != nil {
 		return contract.NewError(contract.ErrInvalidArgument,
 			fmt.Sprintf("Invalid Markdown decorator %q: %v.", executable, err), nil)
@@ -221,10 +221,10 @@ func runMarkdownDecorator(stdout *bytes.Buffer, executable string, markdown []by
 	return nil
 }
 
-// splitDecoratorCommand separates an executable and its arguments without a
-// shell. Quotes group arguments; backslashes remain unchanged so Windows
-// paths survive parsing.
-func splitDecoratorCommand(command string) ([]string, error) {
+// splitCommandLine separates an executable or shell line into arguments
+// without a shell. Quotes group arguments; backslashes remain unchanged so
+// Windows paths survive parsing.
+func splitCommandLine(command string) ([]string, error) {
 	var parts []string
 	var current strings.Builder
 	var quote rune

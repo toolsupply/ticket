@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 var ErrTargetExists = errors.New("publication target already exists")

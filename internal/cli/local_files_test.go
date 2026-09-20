@@ -11,6 +11,9 @@ func TestConvenienceWritesDoNotFollowSymlinks(t *testing.T) {
 	t.Chdir(dir)
 	mustCLI(t, "init")
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Local marker safety", "Keep advisory markers confined."))["id"].(string)
+	if _, code := runCLIHuman(t, "show", id); code != 0 {
+		t.Fatalf("select current ticket: exit=%d", code)
+	}
 	local := filepath.Join(dir, "tickets", ".local")
 	outsideCurrent := filepath.Join(dir, "outside-current")
 	outsideChange := filepath.Join(dir, "outside-change")

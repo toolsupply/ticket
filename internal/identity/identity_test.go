@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"ticket/internal/identity"
+	"github.com/toolsupply/ticket/internal/identity"
 )
 
 func TestRandomSourceUsesTimestampIDFormat(t *testing.T) {

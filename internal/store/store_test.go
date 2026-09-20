@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"ticket/internal/contract"
-	"ticket/internal/testutil"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/testutil"
 )
 
 // initTicketRoot creates a ticket repository at base/tickets and

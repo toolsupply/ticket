@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/contract"
 )
 
 // Backend synchronizes and publishes a ticket repository using a native SCM
@@ -77,13 +77,11 @@ func newBackend(kind string, run commandRunner) Backend {
 func (b *backend) Update(root string) error {
 	switch b.kind {
 	case "git":
-		// A local repository without an upstream is a valid synchronization
-		// target. Validate the work tree first, then pull only when the
-		// current branch has an upstream configured.
-		if err := b.command(root, "git rev-parse", "rev-parse", "--show-toplevel"); err != nil {
+		hasUpstream, err := b.gitHasUpstream(root)
+		if err != nil {
 			return err
 		}
-		if _, err := b.run(root, b.kind, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err != nil {
+		if !hasUpstream {
 			return nil
 		}
 		return b.command(root, "git pull", "pull", "--ff-only")
@@ -92,6 +90,20 @@ func (b *backend) Update(root string) error {
 	default:
 		return unsupportedBackend(b.kind)
 	}
+}
+
+// gitHasUpstream treats a local-only repository as a valid transport target.
+// The first probe preserves useful failures for paths that are not Git work
+// trees; once the work tree is known to be valid, a missing upstream simply
+// means there is no remote synchronization step to perform.
+func (b *backend) gitHasUpstream(root string) (bool, error) {
+	if err := b.command(root, "git rev-parse", "rev-parse", "--show-toplevel"); err != nil {
+		return false, err
+	}
+	if _, err := b.run(root, b.kind, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (b *backend) Commit(root, message string, paths []string) error {
@@ -180,7 +192,9 @@ func gitScopedPaths(paths []string) []string {
 		}
 	}
 	if rootScoped {
-		return []string{".", ":(exclude).local"}
+		// Keep the exclusion wildcarded: a literal .local prefix makes git add
+		// diagnose an ignored directory as an explicitly requested path.
+		return []string{".", ":(exclude,glob)[.]local/**"}
 	}
 	result := append([]string(nil), paths...)
 	return result
@@ -314,6 +328,13 @@ func appendMissingPaths(paths, additions []string) []string {
 func (b *backend) Publish(root string) error {
 	switch b.kind {
 	case "git":
+		hasUpstream, err := b.gitHasUpstream(root)
+		if err != nil {
+			return err
+		}
+		if !hasUpstream {
+			return nil
+		}
 		return b.command(root, "git push", "push")
 	case "svn":
 		// svn commit publishes the change.

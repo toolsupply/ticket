@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ticket/internal/contract"
-	"ticket/internal/domain"
-	"ticket/internal/jsonx"
-	"ticket/internal/scm"
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/jsonx"
+	"github.com/toolsupply/ticket/internal/scm"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 type userConfig struct {
@@ -124,6 +124,9 @@ func (g *globalOpts) configFile(cwd string) (string, bool, error) {
 }
 
 func (g *globalOpts) selectedRoot() string {
+	if g.rootOverride != "" {
+		return g.rootOverride
+	}
 	if store.ConfiguredRoot() == "" && g.scope != nil {
 		return g.scope.Repository
 	}

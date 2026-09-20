@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"ticket/internal/identity"
+	"github.com/toolsupply/ticket/internal/identity"
 )
 
 func TestTicketIDLength(t *testing.T) {

@@ -3,7 +3,7 @@ package domain
 import (
 	"sort"
 
-	"ticket/internal/store"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 type DeleteResult struct {

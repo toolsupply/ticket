@@ -29,7 +29,7 @@ endif
 # Host binary for THIS machine -> bin/ticket (matches the Linux dev host).
 build:
 	@mkdir -p $(BIN)
-	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS) -X ticket/internal/cli.Version=$(VERSION)" -o $(BIN)/ticket $(PKG)
+	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS) -X github.com/toolsupply/ticket/internal/cli.Version=$(VERSION)" -o $(BIN)/ticket $(PKG)
 
 # All release targets -> dist/ticket-<os>-<arch>[.exe].
 dist:
@@ -39,7 +39,7 @@ dist:
 		out=$(DIST)/ticket-$${os}-$${arch}; \
 		case $$os in windows) out=$${out}.exe;; esac; \
 		echo "build $$os/$$arch -> $$out"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "$(LDFLAGS) -X ticket/internal/cli.Version=$(VERSION)" -o "$$out" $(PKG) || exit 1; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "$(LDFLAGS) -X github.com/toolsupply/ticket/internal/cli.Version=$(VERSION)" -o "$$out" $(PKG) || exit 1; \
 	done
 
 # Package dist binaries in the same shape used by GitHub releases. Each

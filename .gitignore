@@ -3,6 +3,8 @@
 /ticket.exe
 /bin/
 /dist/
+/examples/
+/review/
 
 # Test and temporary data
 *.test
