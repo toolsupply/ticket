@@ -49,9 +49,9 @@ func cmdInit(ctx *commandContext, args []string) error {
 	}
 	res := map[string]any{"path": target, "created": created}
 	if !ctx.json {
-		msg := "initialized " + target
+		msg := "initialized " + safeSingleLine(target)
 		if !created {
-			msg = "repository already initialized: " + target
+			msg = "repository already initialized: " + safeSingleLine(target)
 		}
 		fmt.Fprintln(ctx.stdout, msg)
 		return nil

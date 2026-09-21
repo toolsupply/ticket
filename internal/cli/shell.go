@@ -15,6 +15,7 @@ import (
 
 	"github.com/toolsupply/ticket/internal/contract"
 	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/store"
 	"github.com/toolsupply/ticket/internal/terminaltitle"
 )
 
@@ -64,6 +65,7 @@ func runInteractiveIO(args []string, out io.Writer, stdin io.Reader, stderr io.W
 		return emitInteractiveStartupError(contract.NewError(contract.ErrInvalidArgument,
 			message, nil), g.json, out, stderr)
 	}
+	g.machineTransport = g.json
 
 	executor := newSessionExecutor()
 	if err := executor.bind(cwd(), g); err != nil {
@@ -95,11 +97,11 @@ func interactiveTerminalTitle(executor *sessionExecutor) string {
 		defer st.Close()
 		if full, resolveErr := st.ResolveID(executor.state.current, true); resolveErr == nil {
 			if ticket, readErr := domain.ReadTicket(st, full); readErr == nil {
-				return "ticket : " + full + " : " + ticket.Title
+				return "ticket : " + safeSingleLine(full) + " : " + safeSingleLine(ticket.Title)
 			}
 		}
 	}
-	return "ticket : " + executor.state.current
+	return "ticket : " + safeSingleLine(executor.state.current)
 }
 
 func removeInteractiveFlags(args []string) ([]string, error) {
@@ -183,7 +185,7 @@ func interactiveSeedReference(root string) (string, string, bool) {
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", ".local/current", true
 	}
-	data, err := os.ReadFile(path)
+	data, err := store.ReadBoundedFile(path, 128)
 	if err != nil || strings.TrimSpace(string(data)) == "" {
 		return "", ".local/current", true
 	}
@@ -217,7 +219,7 @@ func interactiveLoopWithStdinAndInterrupts(executor *sessionExecutor, input *buf
 			lastTitle = title
 		}
 		if err := renderInteractivePrompt(executor, stderr); err != nil {
-			fmt.Fprintln(stderr, "error: "+err.Error())
+			fmt.Fprintln(stderr, "error: "+safeSingleLine(err.Error()))
 		}
 		line, err := readInteractiveLine(input, interrupts, executor, stderr)
 		if err != nil {
@@ -225,7 +227,7 @@ func interactiveLoopWithStdinAndInterrupts(executor *sessionExecutor, input *buf
 				return 0
 			}
 			if !errors.Is(err, io.EOF) {
-				fmt.Fprintln(stderr, "error: "+err.Error())
+				fmt.Fprintln(stderr, "error: "+safeSingleLine(err.Error()))
 				continue
 			}
 		}
@@ -235,13 +237,13 @@ func interactiveLoopWithStdinAndInterrupts(executor *sessionExecutor, input *buf
 		}
 		if command, ok := interactiveShellCommandLine(line); ok {
 			if err := runInteractiveShellCommand(command, commandStdin, out, stderr); err != nil {
-				fmt.Fprintln(stderr, "error: "+err.Error())
+				fmt.Fprintln(stderr, "error: "+safeSingleLine(err.Error()))
 			}
 			continue
 		}
 		argv, err := splitCommandLine(line)
 		if err != nil {
-			fmt.Fprintln(stderr, "error: "+err.Error())
+			fmt.Fprintln(stderr, "error: "+safeSingleLine(err.Error()))
 			continue
 		}
 		if len(argv) == 0 {
@@ -334,7 +336,7 @@ func readInteractiveLine(input *bufio.Reader, interrupts <-chan os.Signal, execu
 		case <-interrupts:
 			fmt.Fprintln(stderr, "^C")
 			if err := renderInteractivePrompt(executor, stderr); err != nil {
-				fmt.Fprintln(stderr, "error: "+err.Error())
+				fmt.Fprintln(stderr, "error: "+safeSingleLine(err.Error()))
 			}
 		}
 	}
@@ -357,7 +359,7 @@ func renderInteractivePrompt(executor *sessionExecutor, stderr io.Writer) error 
 			st.Close()
 		}
 	}
-	_, err := fmt.Fprintf(stderr, "ticket %s> ", label)
+	_, err := fmt.Fprintf(stderr, "ticket %s> ", safeSingleLine(label))
 	return err
 }
 

@@ -14,6 +14,28 @@ import (
 	"github.com/toolsupply/ticket/internal/domain"
 )
 
+func sanitizeTerminalText(value string, multiline bool) string {
+	var out strings.Builder
+	for _, r := range value {
+		switch {
+		case r == '\n' && multiline:
+			out.WriteRune(r)
+		case r == '\n' || r == '\r' || r == '\t':
+			out.WriteByte(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			// Drop C0/C1 controls, ESC, BEL, and DEL. Any remaining bytes
+			// from an escape sequence are ordinary visible text.
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func safeSingleLine(value string) string { return sanitizeTerminalText(value, false) }
+
+func safeMultiline(value string) string { return sanitizeTerminalText(value, true) }
+
 // renderHumanTo writes compact human output for a successful command result.
 func renderHumanTo(stdout *bytes.Buffer, cmd string, res any, markdown bool, decorators ...string) error {
 	if markdown {
@@ -36,17 +58,17 @@ func renderHumanTo(stdout *bytes.Buffer, cmd string, res any, markdown bool, dec
 func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 	switch r := res.(type) {
 	case *currentTicketSummary:
-		fmt.Fprintf(stdout, "%s  %s  %s\n", r.ID, r.State, r.Title)
+		fmt.Fprintf(stdout, "%s  %s  %s\n", safeSingleLine(r.ID), safeSingleLine(r.State), safeSingleLine(r.Title))
 	case *domain.CreateResult:
-		fmt.Fprintf(stdout, "created %s %s\n", r.ID, r.Path)
+		fmt.Fprintf(stdout, "created %s %s\n", safeSingleLine(r.ID), safeSingleLine(r.Path))
 		if r.State != "" {
-			fmt.Fprintf(stdout, "state:      %s\npriority:   P%d\n", r.State, r.Priority)
+			fmt.Fprintf(stdout, "state:      %s\npriority:   P%d\n", safeSingleLine(r.State), r.Priority)
 			if r.Objective != "" {
-				fmt.Fprintf(stdout, "objective:  %s\n", r.Objective)
+				fmt.Fprintf(stdout, "objective:  %s\n", safeMultiline(r.Objective))
 			}
 		}
 	case *domain.DeleteResult:
-		fmt.Fprintf(stdout, "deleted %s\n", r.ID)
+		fmt.Fprintf(stdout, "deleted %s\n", safeSingleLine(r.ID))
 	case *domain.BatchDeleteResult:
 		fmt.Fprintf(stdout, "deleted %d tickets\n", len(r.Items))
 	case *domain.NextResult:
@@ -62,12 +84,12 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 		if r.Item.Title != nil {
 			title = *r.Item.Title
 		}
-		fmt.Fprintf(stdout, "%s  %s  %s\n", priority, r.Item.ID, title)
+		fmt.Fprintf(stdout, "%s  %s  %s\n", priority, safeSingleLine(r.Item.ID), safeSingleLine(title))
 	case *EditResult:
 		if r.Changed {
-			fmt.Fprintf(stdout, "edited %s\n", r.ID)
+			fmt.Fprintf(stdout, "edited %s\n", safeSingleLine(r.ID))
 		} else {
-			fmt.Fprintf(stdout, "unchanged %s\n", r.ID)
+			fmt.Fprintf(stdout, "unchanged %s\n", safeSingleLine(r.ID))
 		}
 	case *domain.ListResult:
 		fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %s\n", "STATE", "PRI", "ID", "TITLE", "ASSIGNEE")
@@ -89,19 +111,19 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 				assignee = "@" + *it.Assignee
 			}
 			fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %s\n",
-				truncateHuman(state, 10), truncateHuman(pri, 4), it.ID,
-				truncateHuman(title, 42), truncateHuman(assignee, 20))
+				truncateHuman(safeSingleLine(state), 10), truncateHuman(safeSingleLine(pri), 4), safeSingleLine(it.ID),
+				truncateHuman(safeSingleLine(title), 42), truncateHuman(safeSingleLine(assignee), 20))
 		}
 	case *domain.StatusView:
 		renderHumanStatus(stdout, r)
 	case *domain.ShowView:
-		fmt.Fprintf(stdout, "%s %s\n\n", r.ID, r.Title)
-		fmt.Fprintf(stdout, "state:      %s\npriority:   P%d\n", r.State, r.Priority)
+		fmt.Fprintf(stdout, "%s %s\n\n", safeSingleLine(r.ID), safeSingleLine(r.Title))
+		fmt.Fprintf(stdout, "state:      %s\npriority:   P%d\n", safeSingleLine(r.State), r.Priority)
 		if r.AttachmentPath != "" {
-			fmt.Fprintf(stdout, "attachment_path: %s\n", r.AttachmentPath)
+			fmt.Fprintf(stdout, "attachment_path: %s\n", safeSingleLine(r.AttachmentPath))
 		}
 		if r.Assignee != "" {
-			fmt.Fprintf(stdout, "assignee:   %s\n", r.Assignee)
+			fmt.Fprintf(stdout, "assignee:   %s\n", safeSingleLine(r.Assignee))
 		}
 		if r.Readiness != nil {
 			if r.Readiness.Ready {
@@ -110,16 +132,16 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 				fmt.Fprintln(stdout, "readiness=blocked")
 				for _, blocker := range r.Readiness.Blockers {
 					if blocker.ID != "" {
-						fmt.Fprintf(stdout, "blocker=%s id=%s: %s\n", blocker.Code, blocker.ID, blocker.Message)
+						fmt.Fprintf(stdout, "blocker=%s id=%s: %s\n", safeSingleLine(blocker.Code), safeSingleLine(blocker.ID), safeMultiline(blocker.Message))
 					} else {
-						fmt.Fprintf(stdout, "blocker=%s: %s\n", blocker.Code, blocker.Message)
+						fmt.Fprintf(stdout, "blocker=%s: %s\n", safeSingleLine(blocker.Code), safeMultiline(blocker.Message))
 					}
 				}
 			}
 		}
 		fmt.Fprintln(stdout)
 		if r.Body != "" {
-			fmt.Fprint(stdout, r.Body)
+			fmt.Fprint(stdout, safeMultiline(r.Body))
 		} else {
 			for _, key := range []string{"objective", "acceptance", "handoff", "work_log", "outcome"} {
 				text, ok := r.Sections[key]
@@ -127,7 +149,7 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 					continue
 				}
 				fmt.Fprintf(stdout, "## %s\n\n", titleCaseSection(key))
-				content := strings.TrimRight(text.Text, "\r\n")
+				content := strings.TrimRight(safeMultiline(text.Text), "\r\n")
 				if content != "" {
 					fmt.Fprintln(stdout, content)
 				}
@@ -141,26 +163,26 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 			}
 		}
 	case map[string]string:
-		fmt.Fprintf(stdout, "%s %s\n", r["id"], r["path"])
+		fmt.Fprintf(stdout, "%s %s\n", safeSingleLine(r["id"]), safeSingleLine(r["path"]))
 	case *repositoryInfo:
 		renderRepositoryInfoHuman(&commandContext{stdout: stdout}, r)
 	case *domain.UpdateResult:
 		if r.Changed {
-			fmt.Fprintf(stdout, "updated %s (changed: %s)\n", r.ID, strings.Join(r.ChangedFields, ", "))
+			fmt.Fprintf(stdout, "updated %s (changed: %s)\n", safeSingleLine(r.ID), safeSingleLine(strings.Join(r.ChangedFields, ", ")))
 		} else {
-			fmt.Fprintf(stdout, "no changes to %s\n", r.ID)
+			fmt.Fprintf(stdout, "no changes to %s\n", safeSingleLine(r.ID))
 		}
 	case *domain.ClaimResult:
 		if r.Changed {
-			fmt.Fprintf(stdout, "claimed %s (assignee=%s)\n", r.ID, r.Assignee)
+			fmt.Fprintf(stdout, "claimed %s (assignee=%s)\n", safeSingleLine(r.ID), safeSingleLine(r.Assignee))
 		} else {
-			fmt.Fprintf(stdout, "already claimed %s (assignee=%s)\n", r.ID, r.Assignee)
+			fmt.Fprintf(stdout, "already claimed %s (assignee=%s)\n", safeSingleLine(r.ID), safeSingleLine(r.Assignee))
 		}
 	case *domain.ReleaseResult:
 		if r.Changed {
-			fmt.Fprintf(stdout, "released %s\n", r.ID)
+			fmt.Fprintf(stdout, "released %s\n", safeSingleLine(r.ID))
 		} else {
-			fmt.Fprintf(stdout, "already released %s\n", r.ID)
+			fmt.Fprintf(stdout, "already released %s\n", safeSingleLine(r.ID))
 		}
 	case *domain.TransitionResult:
 		renderTransition(stdout, r)
@@ -176,12 +198,12 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 
 func renderTransition(stdout *bytes.Buffer, r *domain.TransitionResult) {
 	if !r.Changed {
-		fmt.Fprintf(stdout, "%s: %s unchanged\n", r.ID, r.State)
+		fmt.Fprintf(stdout, "%s: %s unchanged\n", safeSingleLine(r.ID), safeSingleLine(r.State))
 		return
 	}
-	fmt.Fprintf(stdout, "%s: %s -> %s", r.ID, r.FromState, r.State)
+	fmt.Fprintf(stdout, "%s: %s -> %s", safeSingleLine(r.ID), safeSingleLine(r.FromState), safeSingleLine(r.State))
 	if r.Assignee != "" {
-		fmt.Fprintf(stdout, ", claimed by %s", r.Assignee)
+		fmt.Fprintf(stdout, ", claimed by %s", safeSingleLine(r.Assignee))
 	}
 	fmt.Fprintln(stdout)
 }
@@ -275,8 +297,8 @@ func renderMarkdownTo(stdout *bytes.Buffer, cmd string, res any) error {
 		fmt.Fprintln(stdout, "|---|---:|---|---|---|")
 		for _, it := range r.Items {
 			fmt.Fprintf(stdout, "| %s | %s | %s | %s | %s |\n",
-				markdownCell(pointerString(it.State)), markdownCell(pointerPriority(it.Priority)),
-				markdownCell(it.ID), markdownCell(pointerString(it.Title)), markdownCell(pointerAssignee(it.Assignee)))
+				markdownCell(safeSingleLine(pointerString(it.State))), markdownCell(safeSingleLine(pointerPriority(it.Priority))),
+				markdownCell(safeSingleLine(it.ID)), markdownCell(safeSingleLine(pointerString(it.Title))), markdownCell(safeSingleLine(pointerAssignee(it.Assignee))))
 		}
 		if r.More {
 			fmt.Fprintln(stdout, "\n_more: true_")
@@ -288,47 +310,47 @@ func renderMarkdownTo(stdout *bytes.Buffer, cmd string, res any) error {
 		}
 		fmt.Fprintln(stdout, "| Pri | ID | Title | Assignee |")
 		fmt.Fprintln(stdout, "|---:|---|---|---|")
-		fmt.Fprintf(stdout, "| %s | %s | %s | %s |\n", markdownCell(pointerPriority(r.Item.Priority)),
-			markdownCell(r.Item.ID), markdownCell(pointerString(r.Item.Title)), markdownCell(pointerAssignee(r.Item.Assignee)))
+		fmt.Fprintf(stdout, "| %s | %s | %s | %s |\n", markdownCell(safeSingleLine(pointerPriority(r.Item.Priority))),
+			markdownCell(safeSingleLine(r.Item.ID)), markdownCell(safeSingleLine(pointerString(r.Item.Title))), markdownCell(safeSingleLine(pointerAssignee(r.Item.Assignee))))
 	case *domain.StatusView:
-		fmt.Fprintf(stdout, "## %s\n\n", r.ID)
-		fmt.Fprintf(stdout, "- Title: %s\n- State: %s\n- Priority: P%d\n", markdownCell(r.Title), r.State, r.Priority)
+		fmt.Fprintf(stdout, "## %s\n\n", safeSingleLine(r.ID))
+		fmt.Fprintf(stdout, "- Title: %s\n- State: %s\n- Priority: P%d\n", markdownCell(safeSingleLine(r.Title)), safeSingleLine(r.State), r.Priority)
 		if r.Assignee != "" {
-			fmt.Fprintf(stdout, "- Assignee: %s\n", markdownCell(r.Assignee))
+			fmt.Fprintf(stdout, "- Assignee: %s\n", markdownCell(safeSingleLine(r.Assignee)))
 		}
 		if r.Created != "" {
-			fmt.Fprintf(stdout, "- Created: %s\n", r.Created)
+			fmt.Fprintf(stdout, "- Created: %s\n", safeSingleLine(r.Created))
 		}
 		if r.Modified != "" {
-			fmt.Fprintf(stdout, "- Modified: %s\n", r.Modified)
+			fmt.Fprintf(stdout, "- Modified: %s\n", safeSingleLine(r.Modified))
 		}
 		if len(r.Blockers) > 0 {
 			fmt.Fprintln(stdout, "\n### Blockers")
 			for _, blocker := range r.Blockers {
 				if blocker.ID != "" {
-					fmt.Fprintf(stdout, "- `%s` `%s`: %s\n", blocker.Code, blocker.ID, markdownCell(blocker.Message))
+					fmt.Fprintf(stdout, "- `%s` `%s`: %s\n", safeSingleLine(blocker.Code), safeSingleLine(blocker.ID), markdownCell(safeMultiline(blocker.Message)))
 				} else {
-					fmt.Fprintf(stdout, "- `%s`: %s\n", blocker.Code, markdownCell(blocker.Message))
+					fmt.Fprintf(stdout, "- `%s`: %s\n", safeSingleLine(blocker.Code), markdownCell(safeMultiline(blocker.Message)))
 				}
 			}
 		}
 	case *domain.ShowView:
 		if r.AttachmentPath != "" {
-			fmt.Fprintf(stdout, "Attachment path: `%s`\n\n", markdownCell(r.AttachmentPath))
+			fmt.Fprintf(stdout, "Attachment path: `%s`\n\n", markdownCell(safeSingleLine(r.AttachmentPath)))
 		}
 		if r.Body != "" {
-			fmt.Fprint(stdout, r.Body)
+			fmt.Fprint(stdout, safeMultiline(r.Body))
 			if !strings.HasSuffix(r.Body, "\n") {
 				fmt.Fprintln(stdout)
 			}
 		} else {
-			fmt.Fprintf(stdout, "## %s\n\n", r.Title)
+			fmt.Fprintf(stdout, "## %s\n\n", safeSingleLine(r.Title))
 			for _, key := range []string{"objective", "acceptance", "handoff", "work_log", "outcome"} {
 				section, ok := r.Sections[key]
 				if !ok {
 					continue
 				}
-				fmt.Fprintf(stdout, "### %s\n\n%s", titleCaseSection(key), section.Text)
+				fmt.Fprintf(stdout, "### %s\n\n%s", titleCaseSection(key), safeMultiline(section.Text))
 				if section.Text == "" || !strings.HasSuffix(section.Text, "\n") {
 					fmt.Fprintln(stdout)
 				}
@@ -338,9 +360,9 @@ func renderMarkdownTo(stdout *bytes.Buffer, cmd string, res any) error {
 			fmt.Fprintf(stdout, "\n### Readiness\n\n- Ready: %t\n", r.Readiness.Ready)
 			for _, blocker := range r.Readiness.Blockers {
 				if blocker.ID != "" {
-					fmt.Fprintf(stdout, "- `%s` `%s`: %s\n", blocker.Code, blocker.ID, markdownCell(blocker.Message))
+					fmt.Fprintf(stdout, "- `%s` `%s`: %s\n", safeSingleLine(blocker.Code), safeSingleLine(blocker.ID), markdownCell(safeMultiline(blocker.Message)))
 				} else {
-					fmt.Fprintf(stdout, "- `%s`: %s\n", blocker.Code, markdownCell(blocker.Message))
+					fmt.Fprintf(stdout, "- `%s`: %s\n", safeSingleLine(blocker.Code), markdownCell(safeMultiline(blocker.Message)))
 				}
 			}
 		}
@@ -372,6 +394,7 @@ func pointerAssignee(value *string) string {
 }
 
 func markdownCell(value string) string {
+	value = safeSingleLine(value)
 	value = strings.ReplaceAll(value, "|", "\\|")
 	value = strings.ReplaceAll(value, "\r", "")
 	return strings.ReplaceAll(value, "\n", " ")
@@ -386,24 +409,24 @@ func titleCaseSection(key string) string {
 }
 
 func renderHumanStatus(stdout *bytes.Buffer, r *domain.StatusView) {
-	fmt.Fprintf(stdout, "%s  %s\n\n", r.ID, r.Title)
-	fmt.Fprintf(stdout, "state:      %s\n", r.State)
+	fmt.Fprintf(stdout, "%s  %s\n\n", safeSingleLine(r.ID), safeSingleLine(r.Title))
+	fmt.Fprintf(stdout, "state:      %s\n", safeSingleLine(r.State))
 	fmt.Fprintf(stdout, "priority:   P%d\n", r.Priority)
 	if r.Objective != "" {
-		fmt.Fprintf(stdout, "objective:  %s\n", r.Objective)
+		fmt.Fprintf(stdout, "objective:  %s\n", safeMultiline(r.Objective))
 	}
 	if r.Assignee != "" {
-		fmt.Fprintf(stdout, "assignee:   %s\n", r.Assignee)
+		fmt.Fprintf(stdout, "assignee:   %s\n", safeSingleLine(r.Assignee))
 	}
 	if r.Created != "" {
-		fmt.Fprintf(stdout, "created:    %s\n", r.Created)
+		fmt.Fprintf(stdout, "created:    %s\n", safeSingleLine(r.Created))
 	}
 	if r.Modified != "" {
 		modified := r.Modified
 		if parsed, err := time.Parse(time.RFC3339, r.Modified); err == nil {
 			modified = parsed.Local().Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(stdout, "modified:   %s\n", modified)
+		fmt.Fprintf(stdout, "modified:   %s\n", safeSingleLine(modified))
 	}
 	if r.State == "review" {
 		fmt.Fprintln(stdout, "workflow:   awaiting review")
@@ -423,9 +446,9 @@ func renderHumanStatus(stdout *bytes.Buffer, r *domain.StatusView) {
 	fmt.Fprintln(stdout, "\nblocked by:")
 	for _, blocker := range r.Blockers {
 		if blocker.ID != "" {
-			fmt.Fprintf(stdout, "  %s %s  %s\n", blocker.Code, blocker.ID, blocker.Message)
+			fmt.Fprintf(stdout, "  %s %s  %s\n", safeSingleLine(blocker.Code), safeSingleLine(blocker.ID), safeMultiline(blocker.Message))
 		} else {
-			fmt.Fprintf(stdout, "  %s  %s\n", blocker.Code, blocker.Message)
+			fmt.Fprintf(stdout, "  %s  %s\n", safeSingleLine(blocker.Code), safeMultiline(blocker.Message))
 		}
 	}
 }

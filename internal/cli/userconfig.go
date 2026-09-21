@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,8 @@ type scopeConfig struct {
 	SCMMode    string   `json:"scm_mode"`
 }
 
+const userConfigMaxBytes int64 = 256 << 10
+
 func (g *globalOpts) loadConfig(cwd string) error {
 	if g.configLoaded {
 		return nil
@@ -35,7 +38,7 @@ func (g *globalOpts) loadConfig(cwd string) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) && !explicit {
 			if g.scopeName != "" {
@@ -48,6 +51,16 @@ func (g *globalOpts) loadConfig(cwd string) error {
 		if os.IsNotExist(err) {
 			return contract.NewError(contract.ErrNotFound,
 				"Config file not found: "+path+".", nil)
+		}
+		return contract.NewError(contract.ErrIOError, "Cannot inspect config file "+path+": "+err.Error(), nil)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return contract.NewError(contract.ErrInvalidArgument, "User configuration must be a regular file.", nil)
+	}
+	data, err := store.ReadBoundedFile(path, userConfigMaxBytes)
+	if err != nil {
+		if errors.Is(err, store.ErrReadLimit) {
+			return contract.NewError(contract.ErrFileTooLarge, "User configuration exceeds the 256 KiB limit.", nil)
 		}
 		return contract.NewError(contract.ErrIOError,
 			"Cannot read config file "+path+": "+err.Error(), nil)

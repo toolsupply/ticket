@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/toolsupply/ticket/internal/contract"
 	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 // runCLI executes one invocation with cwd and captures stdout.
@@ -297,8 +300,18 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 	if !strings.Contains(topLevelHelp[maintenance:], "  check      Validate the repository\n") {
 		t.Fatalf("check is not in maintenance: %q", topLevelHelp)
 	}
-	if !strings.Contains(topLevelHelp, "  ready [open|review]  Inspect eligible work\n") {
-		t.Fatalf("ready is missing from top-level help: %q", topLevelHelp)
+	for _, line := range []string{
+		"  ready      Inspect eligible work\n",
+		"  next       Select the next eligible ticket\n",
+		"  wait       Wait for eligible work\n",
+		"  watch      Watch live ticket activity\n",
+	} {
+		if !strings.Contains(topLevelHelp, line) {
+			t.Fatalf("%q is missing from top-level help: %q", line, topLevelHelp)
+		}
+	}
+	if strings.Contains(topLevelHelp, "[open|review]") {
+		t.Fatalf("top-level help should not expose queue markers: %q", topLevelHelp)
 	}
 	if strings.Contains(topLevelHelp, "Interactive shell:") || strings.Contains(topLevelHelp, "-i, --interactive") {
 		t.Fatalf("top-level help should not document interactive mode: %q", topLevelHelp)
@@ -623,13 +636,13 @@ func TestSCMLifecycleWrapsRepositoryCommands(t *testing.T) {
 	if len(lines) != 9 || !strings.HasSuffix(lines[0], "|rev-parse --show-toplevel") ||
 		strings.HasSuffix(lines[1], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") == false ||
 		!strings.HasSuffix(lines[2], "|pull --ff-only") ||
-		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- . :(exclude,glob)[.]local/**" ||
-		!strings.Contains(lines[4], "|diff --cached --quiet -- . :(exclude,glob)[.]local/**") ||
+		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- "+created["id"].(string)+"/TASK.md" ||
+		!strings.Contains(lines[4], "|diff --cached --quiet -- "+created["id"].(string)+"/TASK.md") ||
 		!strings.Contains(lines[5], "|commit --only -m ticket: create ") ||
-		!strings.HasSuffix(lines[5], " -- . :(exclude,glob)[.]local/**") ||
+		!strings.HasSuffix(lines[5], " -- "+created["id"].(string)+"/TASK.md") ||
 		!strings.HasSuffix(lines[6], "|rev-parse --show-toplevel") ||
 		!strings.HasSuffix(lines[7], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") ||
-		!strings.HasSuffix(lines[8], "|push") {
+		!strings.HasSuffix(lines[8], "|push -- origin HEAD:refs/heads/main") {
 		t.Fatalf("create SCM lifecycle: %q", string(data))
 	}
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
@@ -648,13 +661,13 @@ func TestSCMLifecycleWrapsRepositoryCommands(t *testing.T) {
 	if len(lines) != 9 || !strings.HasSuffix(lines[0], "|rev-parse --show-toplevel") ||
 		!strings.HasSuffix(lines[1], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") ||
 		!strings.HasSuffix(lines[2], "|pull --ff-only") ||
-		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- . :(exclude,glob)[.]local/**" ||
-		!strings.Contains(lines[4], "|diff --cached --quiet -- . :(exclude,glob)[.]local/**") ||
+		strings.TrimSpace(lines[3]) != strings.TrimSuffix(lines[0], "rev-parse --show-toplevel")+"add -- "+created["id"].(string)+"/TASK.md" ||
+		!strings.Contains(lines[4], "|diff --cached --quiet -- "+created["id"].(string)+"/TASK.md") ||
 		!strings.Contains(lines[5], "|commit --only -m ticket: next ") ||
-		!strings.HasSuffix(lines[5], " -- . :(exclude,glob)[.]local/**") ||
+		!strings.HasSuffix(lines[5], " -- "+created["id"].(string)+"/TASK.md") ||
 		!strings.HasSuffix(lines[6], "|rev-parse --show-toplevel") ||
 		!strings.HasSuffix(lines[7], "|rev-parse --abbrev-ref --symbolic-full-name @{u}") ||
-		!strings.HasSuffix(lines[8], "|push") {
+		!strings.HasSuffix(lines[8], "|push -- origin HEAD:refs/heads/main") {
 		t.Fatalf("next SCM lifecycle: %q", string(data))
 	}
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
@@ -702,13 +715,14 @@ func TestSCMRetryPublishesPendingMutationAfterPushFailure(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 17 || lines[0] != "rev-parse --show-toplevel" ||
 		lines[1] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[2] != "pull --ff-only" ||
-		lines[3] != "add -- . :(exclude,glob)[.]local/**" || lines[4] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
+		lines[3] != "add -- "+id+"/TASK.md" || lines[4] != "diff --cached --quiet -- "+id+"/TASK.md" ||
 		!strings.HasPrefix(lines[5], "commit --only -m ticket: claim ") ||
-		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[8] != "push" ||
+		lines[5] != "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md" ||
+		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[8] != "push -- origin HEAD:refs/heads/main" ||
 		lines[9] != "rev-parse --show-toplevel" || lines[10] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
-		lines[11] != "pull --ff-only" || lines[12] != "add -- . :(exclude,glob)[.]local/**" ||
-		lines[13] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
-		lines[14] != "rev-parse --show-toplevel" || lines[15] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[16] != "push" {
+		lines[11] != "pull --ff-only" || lines[12] != "add -- "+id+"/TASK.md" ||
+		lines[13] != "diff --cached --quiet -- "+id+"/TASK.md" ||
+		lines[14] != "rev-parse --show-toplevel" || lines[15] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[16] != "push -- origin HEAD:refs/heads/main" {
 		t.Fatalf("pending publish lifecycle: %q", string(data))
 	}
 }
@@ -743,13 +757,13 @@ func TestSCMRetryCommitsPendingMutationAfterCommitFailure(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 15 || lines[0] != "rev-parse --show-toplevel" ||
 		lines[1] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[2] != "pull --ff-only" ||
-		lines[3] != "add -- . :(exclude,glob)[.]local/**" || lines[4] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
-		lines[5] != "commit --only -m ticket: claim "+id+" -- . :(exclude,glob)[.]local/**" ||
+		lines[3] != "add -- "+id+"/TASK.md" || lines[4] != "diff --cached --quiet -- "+id+"/TASK.md" ||
+		lines[5] != "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md" ||
 		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
-		lines[8] != "pull --ff-only" || lines[9] != "add -- . :(exclude,glob)[.]local/**" ||
-		lines[10] != "diff --cached --quiet -- . :(exclude,glob)[.]local/**" ||
-		lines[11] != "commit --only -m ticket: claim "+id+" -- . :(exclude,glob)[.]local/**" ||
-		lines[12] != "rev-parse --show-toplevel" || lines[13] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[14] != "push" {
+		lines[8] != "pull --ff-only" || lines[9] != "add -- "+id+"/TASK.md" ||
+		lines[10] != "diff --cached --quiet -- "+id+"/TASK.md" ||
+		lines[11] != "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md" ||
+		lines[12] != "rev-parse --show-toplevel" || lines[13] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[14] != "push -- origin HEAD:refs/heads/main" {
 		t.Fatalf("pending commit lifecycle: %q", string(data))
 	}
 }
@@ -766,6 +780,143 @@ func TestSCMReloadsConfigAfterSynchronization(t *testing.T) {
 	t.Setenv("TICKET_SCM_MODE", "sync")
 	if out, code := runCLI(t, "list"); code == 0 || errCode(t, out) != "unsupported_version" {
 		t.Fatalf("post-sync config validation: exit=%d out=%q", code, out)
+	}
+}
+
+func TestSCMRejectsPostSyncLocalReplacement(t *testing.T) {
+	for _, kind := range []string{"symlink", "regular"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if out, code := runCLI(t, "init"); code != 0 {
+				t.Fatalf("init: exit=%d out=%q", code, out)
+			}
+			sentinel := filepath.Join(dir, "sentinel")
+			if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			installFakeSCM(t, filepath.Join(dir, "bin"), "scm-replace-local")
+			t.Setenv("SCM_REPLACE_KIND", kind)
+			t.Setenv("SCM_SENTINEL", sentinel)
+			t.Setenv("TICKET_SCM", "git")
+			t.Setenv("TICKET_SCM_MODE", "sync")
+			out, code := runCLI(t, "list")
+			wantCode := "invalid_repository"
+			if runtime.GOOS == "windows" {
+				wantCode = "io_error"
+			}
+			if code == 0 || errCode(t, out) != wantCode {
+				t.Fatalf("post-sync %s replacement: exit=%d out=%q", kind, code, out)
+			}
+			if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+				t.Fatalf("sentinel changed: %q (%v)", got, err)
+			}
+		})
+	}
+}
+
+func TestSCMTrackedLocalReplacementDoesNotCreateRuntimeLock(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	installFakeSCM(t, filepath.Join(dir, "bin"), "scm-replace-local-dir")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	out, code := runCLI(t, "list")
+	wantCode := "invalid_repository"
+	if runtime.GOOS == "windows" {
+		wantCode = "io_error"
+	}
+	if code == 0 || errCode(t, out) != wantCode {
+		t.Fatalf("tracked local replacement: exit=%d out=%q", code, out)
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := os.Lstat(filepath.Join(dir, "tickets", ".local", "lock")); err != nil {
+			t.Fatalf("live Windows lock disappeared after blocked replacement: %v", err)
+		}
+		return
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "tickets", ".local", "lock")); !os.IsNotExist(err) {
+		t.Fatalf("post-sync validation created a runtime lock: %v", err)
+	}
+}
+
+func TestSCMRealGitRejectsUpstreamLocalSymlinkWithoutMarkerWrites(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	local := filepath.Join(base, "local")
+	upstream := filepath.Join(base, "upstream")
+	external := filepath.Join(base, "external")
+	for _, dir := range []string{local, external} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.InitRoot(filepath.Join(local, "tickets")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "sentinel"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	runGit(base, "init", "--bare", remote)
+	runGit(local, "init")
+	runGit(local, "config", "user.email", "ticket@example.invalid")
+	runGit(local, "config", "user.name", "Ticket Test")
+	runGit(local, "add", ".")
+	runGit(local, "commit", "-m", "initial")
+	runGit(local, "branch", "-M", "main")
+	runGit(local, "remote", "add", "origin", remote)
+	runGit(local, "push", "-u", "origin", "main")
+	runGit(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(base, "clone", remote, upstream)
+	runGit(upstream, "config", "user.email", "ticket@example.invalid")
+	runGit(upstream, "config", "user.name", "Ticket Test")
+	if err := os.RemoveAll(filepath.Join(upstream, "tickets", ".local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(upstream, "tickets", ".local")); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
+	}
+	runGit(upstream, "add", "-f", "tickets/.local")
+	runGit(upstream, "commit", "-m", "replace local runtime state")
+	runGit(upstream, "push")
+
+	t.Chdir(local)
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	_, code := runCLIHuman(t, "create", "Must not publish", "The sync boundary must fail closed.")
+	if code == 0 {
+		t.Fatal("SCM replacement unexpectedly allowed a mutation")
+	}
+	if got, err := os.ReadFile(filepath.Join(external, "sentinel")); err != nil || string(got) != "keep" {
+		t.Fatalf("external marker changed: %q (%v)", got, err)
+	}
+	for _, entry := range []string{"current", "change"} {
+		if _, err := os.Lstat(filepath.Join(external, entry)); !os.IsNotExist(err) {
+			t.Fatalf("out-of-root marker %s was written: %v", entry, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(local, "tickets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.Contains(entry.Name(), "-") {
+			t.Fatalf("mutation continued after replacement: %s", entry.Name())
+		}
 	}
 }
 

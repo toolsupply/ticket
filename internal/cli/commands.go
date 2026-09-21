@@ -18,31 +18,48 @@ import (
 
 // globalOpts are the flags accepted on every command.
 type globalOpts struct {
-	json           bool
-	actor          string
-	debug          bool
-	scopeName      string
-	configPath     string
-	configExplicit bool
-	scopeExplicit  bool
-	configLoaded   bool
-	config         userConfig
-	scope          *scopeConfig
-	rootOverride   string
-	sessionBound   bool
+	json             bool
+	machineTransport bool
+	actor            string
+	debug            bool
+	scopeName        string
+	configPath       string
+	configExplicit   bool
+	scopeExplicit    bool
+	configLoaded     bool
+	config           userConfig
+	scope            *scopeConfig
+	rootOverride     string
+	sessionBound     bool
+	liveWriter       io.Writer
 }
 
 func (g *globalOpts) register(p *parser) {
-	p.boolValue("json", &g.json)
+	g.registerJSON(p)
 	p.str("actor", &g.actor)
 	p.boolValue("debug", &g.debug)
 	g.registerConfig(p)
 }
 
 func (g *globalOpts) registerWithoutActor(p *parser) {
-	p.boolValue("json", &g.json)
+	g.registerJSON(p)
 	p.boolValue("debug", &g.debug)
 	g.registerConfig(p)
+}
+
+func (g *globalOpts) registerJSON(p *parser) {
+	if !g.machineTransport {
+		p.boolValue("json", &g.json)
+		return
+	}
+	p.flag("json", kindBool, func(value string) error {
+		if value != "true" {
+			return contract.NewError(contract.ErrInvalidArgument,
+				"Persistent JSON transport cannot disable --json.", nil)
+		}
+		g.json = true
+		return nil
+	}, false)
 }
 
 func (g *globalOpts) registerConfig(p *parser) {
@@ -120,6 +137,7 @@ type commandContext struct {
 	session       *sessionState
 	executor      *sessionExecutor
 	done          <-chan struct{}
+	liveWriter    io.Writer
 	globalOpts
 }
 
@@ -232,16 +250,22 @@ func openSynchronizedStore(g *globalOpts, cwd string) (*store.Store, scm.Backend
 		return nil, nil, err
 	}
 	if backend != nil {
+		if err := backend.ValidateLocal(st.Root); err != nil {
+			st.Close()
+			return nil, nil, err
+		}
 		if err := backend.Update(st.Root); err != nil {
 			st.Close()
 			return nil, nil, err
 		}
-		cfg, err := store.LoadConfig(st.Root)
-		if err != nil {
+		if err := backend.ValidateLocal(st.Root); err != nil {
 			st.Close()
 			return nil, nil, err
 		}
-		st.Cfg = cfg
+		if err := st.RevalidateAfterSync(); err != nil {
+			st.Close()
+			return nil, nil, err
+		}
 	}
 	return st, backend, nil
 }
@@ -250,8 +274,10 @@ func persistMutation(backend scm.Backend, st *store.Store, cmd string, result an
 	if backend == nil {
 		return nil
 	}
-	paths := []string{"."}
-	paths = append(paths, deletedResultIDs(result)...)
+	paths := mutationPaths(result)
+	if len(paths) == 0 {
+		return nil
+	}
 	if err := backend.Commit(st.Root, commitMessage(cmd, result), paths); err != nil {
 		return scmMutationError(err, result)
 	}
@@ -261,8 +287,10 @@ func persistMutation(backend scm.Backend, st *store.Store, cmd string, result an
 	return nil
 }
 
-func deletedResultIDs(result any) []string {
+func mutationPaths(result any) []string {
 	switch value := result.(type) {
+	case *domain.CreateResult:
+		return []string{value.Path}
 	case *domain.DeleteResult:
 		if value.Changed {
 			return []string{value.ID}
@@ -275,9 +303,31 @@ func deletedResultIDs(result any) []string {
 			}
 		}
 		return ids
+	case *EditResult:
+		return []string{value.Path}
+	case *domain.UpdateResult:
+		return []string{ticketTaskPath(value.ID)}
+	case *domain.ClaimResult:
+		return []string{ticketTaskPath(value.ID)}
+	case *domain.ReleaseResult:
+		return []string{ticketTaskPath(value.ID)}
+	case *domain.TransitionResult:
+		return []string{ticketTaskPath(value.ID)}
+	case *domain.BatchTransitionResult:
+		paths := make([]string, 0, len(value.Items))
+		for _, item := range value.Items {
+			paths = append(paths, ticketTaskPath(item.ID))
+		}
+		return paths
+	case *domain.NextResult:
+		if value.Item != nil {
+			return []string{ticketTaskPath(value.Item.ID)}
+		}
 	}
 	return nil
 }
+
+func ticketTaskPath(id string) string { return id + "/TASK.md" }
 
 func scmMutationError(err error, result any) error {
 	details := map[string]any{}
@@ -434,7 +484,7 @@ func resolveTicketRef(st *store.Store, ctx *commandContext, ref, command string)
 	if current := strings.TrimSpace(os.Getenv("TICKET_CURRENT")); current != "" {
 		return current, nil
 	}
-	data, err := os.ReadFile(filepath.Join(st.Root, ".local", "current"))
+	data, err := store.ReadLocalFile(st.Root, "current", 128)
 	if err == nil && strings.TrimSpace(string(data)) != "" {
 		return strings.TrimSpace(string(data)), nil
 	}
@@ -459,7 +509,7 @@ func emitCurrentSummaryOrHelp(ctx *commandContext) error {
 		ref = strings.TrimSpace(os.Getenv("TICKET_CURRENT"))
 	}
 	if ref == "" && ctx.session == nil {
-		data, readErr := os.ReadFile(filepath.Join(st.Root, ".local", "current"))
+		data, readErr := store.ReadLocalFile(st.Root, "current", 128)
 		if readErr == nil {
 			ref = strings.TrimSpace(string(data))
 		} else if !os.IsNotExist(readErr) {

@@ -27,6 +27,40 @@ type Lock struct {
 	file *os.File
 }
 
+func acquireLockFile(f *os.File, path string, timeout time.Duration) (*Lock, error) {
+	l := &Lock{path: path, file: f}
+	if err := acquire(l.file, timeout); err != nil {
+		f.Close()
+		if err == errLockTimeout {
+			return nil, contract.NewError(contract.ErrLockTimeout,
+				"Could not acquire the ticket-root lock within the bounded wait.",
+				map[string]any{"timeout": secondsJSON(timeout)})
+		}
+		return nil, contract.NewError(contract.ErrIOError,
+			"Lock acquisition failed: "+err.Error(), nil)
+	}
+	return l, nil
+}
+
+func AcquireLockRoot(root *os.Root, timeout time.Duration) (*Lock, error) {
+	path := filepath.Join(root.Name(), ".local", "lock")
+	if info, statErr := root.Lstat(filepath.Join(".local", "lock")); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, contract.NewError(contract.ErrInvalidRepository,
+				".local/lock must be a regular file and must not be a symlink.", nil)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, contract.NewError(contract.ErrIOError,
+			"Cannot inspect ticket-root lock file: "+statErr.Error(), nil)
+	}
+	f, err := openRootNoFollow(root, filepath.Join(".local", "lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, contract.NewError(contract.ErrIOError,
+			"Cannot open ticket-root lock file: "+err.Error(), nil)
+	}
+	return acquireLockFile(f, path, timeout)
+}
+
 // AcquireLock acquires the exclusive ticket-root lock within timeout.
 // The containing directory must exist; it is created by the caller.
 func AcquireLock(localDir string, timeout time.Duration) (*Lock, error) {
@@ -45,18 +79,7 @@ func AcquireLock(localDir string, timeout time.Duration) (*Lock, error) {
 		return nil, contract.NewError(contract.ErrIOError,
 			"Cannot open ticket-root lock file: "+err.Error(), nil)
 	}
-	l := &Lock{path: path, file: f}
-	if err := acquire(l.file, timeout); err != nil {
-		f.Close()
-		if err == errLockTimeout {
-			return nil, contract.NewError(contract.ErrLockTimeout,
-				"Could not acquire the ticket-root lock within the bounded wait.",
-				map[string]any{"timeout": secondsJSON(timeout)})
-		}
-		return nil, contract.NewError(contract.ErrIOError,
-			"Lock acquisition failed: "+err.Error(), nil)
-	}
-	return l, nil
+	return acquireLockFile(f, path, timeout)
 }
 
 // Release unlocks and closes the lock file (the file itself stays).

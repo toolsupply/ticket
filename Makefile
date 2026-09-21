@@ -9,6 +9,7 @@
 
 GO     ?= go
 PKG   := ./cmd/ticket
+RACE_PKGS ?= ./...
 BIN   := bin
 DIST  := dist
 LDFLAGS ?= -s -w
@@ -24,7 +25,7 @@ ifeq ($(VERSION),)
 $(error VERSION must contain a release version)
 endif
 
-.PHONY: build dist archives release test race vet fmt clean
+.PHONY: build dist archives release test race race-fresh vet fmt clean
 
 # Host binary for THIS machine -> bin/ticket (matches the Linux dev host).
 build:
@@ -71,7 +72,11 @@ test:
 	$(GO) test ./... -count=1
 
 race:
-	$(GO) test ./... -count=1 -race
+	$(GO) test -race $(RACE_PKGS)
+
+# Run the complete race suite without using cached test results.
+race-fresh:
+	$(GO) test -race -count=1 ./...
 
 vet:
 	$(GO) vet ./...

@@ -57,14 +57,30 @@ type testingT interface {
 
 func runTestHelper(mode string) int {
 	args := os.Args[1:]
+	if strings.HasPrefix(mode, "scm-") && firstArg(args) == "ls-files" {
+		if mode == "scm-replace-local-dir" && fileExists(filepath.Join(currentDirectory(), ".local-before-sync")) {
+			fmt.Fprintln(os.Stdout, ".local")
+			return 0
+		}
+		return 1
+	}
+	if strings.HasPrefix(mode, "scm-") && fakeGitUpstream(args) {
+		return 0
+	}
 	switch mode {
 	case "scm-lifecycle":
 		appendHelperLog(os.Getenv("SCM_LOG"), currentDirectory()+"|"+strings.Join(args, " "))
+		if fakeGitProbe(args) {
+			return 0
+		}
 		if firstArg(args) == "diff" {
 			return 1
 		}
 	case "scm-push-retry":
 		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		if fakeGitProbe(args) {
+			return 0
+		}
 		switch firstArg(args) {
 		case "diff":
 			if fileExists(os.Getenv("SCM_STATE")) {
@@ -82,6 +98,9 @@ func runTestHelper(mode string) int {
 		}
 	case "scm-push-retry-editor-write":
 		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		if fakeGitProbe(args) {
+			return 0
+		}
 		switch firstArg(args) {
 		case "diff":
 			if fileExists(os.Getenv("SCM_STATE")) {
@@ -103,6 +122,9 @@ func runTestHelper(mode string) int {
 		}
 	case "scm-commit-retry":
 		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		if fakeGitProbe(args) {
+			return 0
+		}
 		switch firstArg(args) {
 		case "diff":
 			if fileExists(os.Getenv("SCM_STATE")) {
@@ -118,12 +140,57 @@ func runTestHelper(mode string) int {
 			}
 		}
 	case "scm-reload-config":
+		if fakeGitProbe(args) {
+			return 0
+		}
 		if err := os.WriteFile("config.json", []byte("{\"format_version\":2}\n"), 0o600); err != nil {
 			return 2
 		}
 	case "scm-update-failure":
+		if fakeGitProbe(args) {
+			return 0
+		}
 		fmt.Fprintln(os.Stderr, "remote unavailable")
 		return 1
+	case "scm-replace-local":
+		switch firstArg(args) {
+		case "rev-parse":
+			if len(args) > 1 && args[1] == "--abbrev-ref" {
+				fmt.Fprintln(os.Stdout, "origin/main")
+			} else {
+				fmt.Fprintln(os.Stdout, currentDirectory())
+			}
+		case "pull":
+			old := filepath.Join(currentDirectory(), ".local")
+			backup := filepath.Join(currentDirectory(), ".local-before-sync")
+			if err := os.Rename(old, backup); err != nil {
+				return 2
+			}
+			if os.Getenv("SCM_REPLACE_KIND") == "symlink" {
+				if err := os.Symlink(os.Getenv("SCM_SENTINEL"), old); err != nil {
+					return 2
+				}
+			} else if err := os.WriteFile(old, []byte("unexpected"), 0o600); err != nil {
+				return 2
+			}
+		}
+	case "scm-replace-local-dir":
+		if firstArg(args) == "rev-parse" {
+			if len(args) > 1 && args[1] == "--abbrev-ref" {
+				fmt.Fprintln(os.Stdout, "origin/main")
+			} else {
+				fmt.Fprintln(os.Stdout, currentDirectory())
+			}
+		} else if firstArg(args) == "pull" {
+			old := filepath.Join(currentDirectory(), ".local")
+			backup := filepath.Join(currentDirectory(), ".local-before-sync")
+			if err := os.Rename(old, backup); err != nil {
+				return 2
+			}
+			if err := os.Mkdir(old, 0o755); err != nil {
+				return 2
+			}
+		}
 	case "editor-append":
 		if err := appendHelperFile(lastArg(args), os.Getenv("TEST_EDITOR_BODY")); err != nil {
 			return 2
@@ -181,6 +248,26 @@ func runTestHelper(mode string) int {
 		return 2
 	}
 	return 0
+}
+
+func fakeGitProbe(args []string) bool {
+	if firstArg(args) != "rev-parse" {
+		return false
+	}
+	if len(args) > 1 && args[1] == "--abbrev-ref" {
+		fmt.Fprintln(os.Stdout, "origin/main")
+	} else {
+		fmt.Fprintln(os.Stdout, currentDirectory())
+	}
+	return true
+}
+
+func fakeGitUpstream(args []string) bool {
+	if firstArg(args) != "for-each-ref" {
+		return false
+	}
+	fmt.Fprint(os.Stdout, "origin\x00refs/heads/main\n")
+	return true
 }
 
 func firstArg(args []string) string {

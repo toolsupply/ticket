@@ -2,29 +2,53 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.1.8] - 2026-09-21
+
+### Added
+
+- Added `ticket watch` for live, read-only ticket activity.
+
+### Changed
+
+- Human `ticket edit` claims claimable, unassigned open/review tickets before
+  launching the editor, reducing conflicts with automated workers.
+
+### Security
+
+- Persistent JSON transport can no longer be downgraded to human mode with
+  request-level JSON flags.
+- `.local` runtime state is revalidated after Git and SVN synchronization.
+- Git and SVN mutations use literal, mutation-scoped paths; Git pushes an
+  explicit configured remote/ref, while local repositories without an upstream
+  remain supported no-ops.
+- Human-rendered ticket content is sanitized for terminal control sequences.
+- Strict JSON duplicate-key validation is linear, and configuration, init
+  metadata, and local markers have conservative size and type checks with stable
+  errors. Exact-size files remain accepted; oversized files are rejected.
+
 ## [0.1.7] - 2026-09-21
 
 ### Added
 
-- Added queue-aware `ticket ready [open|review]` inspection
-- Added terminal title control in 'ticket -i' shell mode
+- Added queue-aware `ticket ready [open|review]` inspection.
+- Added terminal title control in 'ticket -i' shell mode.
 - Added optional name property to repository config.json
 
 ## [0.1.6] - 2026-09-20
 
 ### Added
 
-- Added the `ticket -i` line-oriented shell mode
+- Added the `ticket -i` line-oriented shell mode.
 - Added promptless NDJSON transport with `ticket -j -i`.
 - Added `ticket add` as an alias for the create/new commands.
 
 ### Changed
 
-- Made `.local/current` exclusively human convenience state
-- Made editor-backed create and edit flows session-aware
-- Made Git-backed ticket repositories work without a upstream
-- Fixed interactive handling of prompt interrupts, interrupted waits, final
-  input without a newline, and invalid editor drafts
+- Made `.local/current` exclusively human convenience state.
+- Made editor-backed create and edit flows session-aware.
+- Made Git-backed ticket repositories work without a upstream.
+- Fixed interactive handling of prompt interrupts, interrupted waits, final.
+  input without a newline, and invalid editor drafts.
 - Switched to go 1.26.8
 
 ## [0.1.4] - 2026-09-18
@@ -48,7 +72,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 ### Changed
 
-- Strengthened ticket ownership enforcement for concurrent workers
+- Strengthened ticket ownership enforcement for concurrent workers.
 - Tuned execution bias in SKILL.md
 - Condensed SKILL.md
 
@@ -73,6 +97,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.1.8]: https://github.com/toolsupply/ticket/releases/tag/v0.1.8
 [0.1.7]: https://github.com/toolsupply/ticket/releases/tag/v0.1.7
 [0.1.6]: https://github.com/toolsupply/ticket/releases/tag/v0.1.6
 [0.1.4]: https://github.com/toolsupply/ticket/releases/tag/v0.1.4

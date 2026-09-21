@@ -63,5 +63,5 @@ func renderRepositoryInfoHuman(ctx *commandContext, result *repositoryInfo) {
 		scope = *result.Scope
 	}
 	fmt.Fprintf(ctx.stdout, "path:            %s\nname:            %s\nformat_version:  %d\nstorage_version: %d\nscope:            %s\n",
-		result.Path, name, result.FormatVersion, result.StorageVersion, scope)
+		safeSingleLine(result.Path), safeSingleLine(name), result.FormatVersion, result.StorageVersion, safeSingleLine(scope))
 }

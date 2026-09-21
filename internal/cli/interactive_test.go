@@ -91,6 +91,72 @@ func TestInteractiveEditReleasesRepositoryLock(t *testing.T) {
 	}
 }
 
+func TestInteractiveEditClaimsUnassignedTicketBeforeEditor(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Claim before edit", "Claim this ticket before opening the editor."))["id"].(string)
+	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited after claiming.\n")
+	t.Setenv("EDITOR", editor)
+	defer releaseEditor(t, release)
+
+	result := make(chan int, 1)
+	go func() {
+		var out bytes.Buffer
+		result <- Run([]string{"edit", id, "--actor", "worker"}, &out)
+	}()
+	waitForFile(t, started)
+	st, err := store.Open(dir, store.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open repository while editing: %v", err)
+	}
+	ticket, err := domain.ReadTicket(st, id)
+	st.Close()
+	if err != nil {
+		t.Fatalf("read ticket while editing: %v", err)
+	}
+	if ticket.Assignee != "worker" {
+		t.Fatalf("ticket was not claimed before editor: %q", ticket.Assignee)
+	}
+	releaseEditor(t, release)
+	if code := <-result; code != 0 {
+		t.Fatalf("edit after automatic claim failed: exit=%d", code)
+	}
+}
+
+func TestInteractiveEditPreservesUnassignedNonClaimableStates(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	holdID := exactlyOneJSONObject(t, mustCLI(t, "create", "Hold edit"))["id"].(string)
+	blockedID := exactlyOneJSONObject(t, mustCLI(t, "create", "Blocked open edit", "Edit despite a blocker."))["id"].(string)
+	runCLIStdinMust(t, `{"set":{"blocked_reason":"Waiting for an external dependency."}}`, "update", blockedID, "--input", "-")
+	completedID := exactlyOneJSONObject(t, mustCLI(t, "create", "Completed edit", "Complete before editing."))["id"].(string)
+	mustCLI(t, "submit", completedID)
+	mustCLI(t, "close", completedID)
+	t.Setenv("TICKET_ACTOR", "")
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-append")
+	t.Setenv("EDITOR", editor)
+	for _, test := range []struct {
+		id   string
+		body string
+	}{
+		{holdID, "Edited while held."},
+		{blockedID, "Edited while blocked."},
+		{completedID, "Edited after completion."},
+	} {
+		t.Setenv("TEST_EDITOR_BODY", "\n## Handoff\n"+test.body+"\n")
+		out, stderr, code := runCLIHumanError(t, "edit", test.id)
+		if code != 0 || !strings.Contains(out, "edited "+test.id) || stderr != "" {
+			t.Fatalf("edit %s: exit=%d out=%q stderr=%q", test.id, code, out, stderr)
+		}
+		view := exactlyOneJSONObject(t, mustCLI(t, "show", test.id, "--full"))
+		if view["assignee"] != nil || !strings.Contains(view["body"].(string), test.body) {
+			t.Fatalf("non-claimable edit changed ownership or body: %v", view)
+		}
+	}
+}
+
 func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -98,6 +164,7 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 		t.Fatalf("init: exit=%d out=%q", code, out)
 	}
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Concurrent edit", "Protect concurrent changes."))["id"].(string)
+	t.Setenv("TICKET_ACTOR", "user")
 	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited draft.\n")
 	t.Setenv("EDITOR", editor)
 	defer releaseEditor(t, release)
@@ -111,7 +178,7 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("concurrent mutation lock: %v", err)
 	}
-	if _, err := domain.Update(st, id, domain.UpdateOptions{Sections: map[string]string{"handoff": "Concurrent live change."}}); err != nil {
+	if _, err := domain.Update(st, id, domain.UpdateOptions{Actor: "user", Sections: map[string]string{"handoff": "Concurrent live change."}}); err != nil {
 		st.Close()
 		t.Fatalf("concurrent mutation: %v", err)
 	}
@@ -132,36 +199,35 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	}
 }
 
-func TestInteractiveEditRequiresOwnershipBeforeEditor(t *testing.T) {
+func TestInteractiveEditWarnsForAnotherOwnerAndUsesUserFallback(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	mustCLI(t, "init")
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Owned edit", "Keep edit ownership enforced."))["id"].(string)
 	mustCLI(t, "claim", id, "--actor", "alice")
 	path := filepath.Join(dir, "tickets", id, "TASK.md")
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-block")
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-append")
 	t.Setenv("EDITOR", editor)
 	t.Setenv("TICKET_ACTOR", "bob")
-	if stdout, stderr, code := runCLIHumanError(t, "edit", id); code != 4 || stdout != "" || !strings.Contains(stderr, "assigned to another actor") {
+	t.Setenv("TEST_EDITOR_BODY", "\n## Handoff\nEdited by another actor.\n")
+	if stdout, stderr, code := runCLIHumanError(t, "edit", id); code != 0 || !strings.Contains(stdout, "edited "+id) || !strings.Contains(stderr, "editing without changing ownership") {
 		t.Fatalf("different-owner edit: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if fileExists(filepath.Join(dir, "editor-started")) {
-		t.Fatal("editor started for a ticket owned by another actor")
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if view["assignee"] != "alice" || !strings.Contains(view["body"].(string), "Edited by another actor.") {
+		t.Fatalf("different-owner edit changed ownership or failed to edit: %v", view)
 	}
 	t.Setenv("TICKET_ACTOR", "")
-	if stdout, stderr, code := runCLIHumanError(t, "edit", id); code != 2 || stdout != "" || !strings.Contains(stderr, "actor is required") {
+	t.Setenv("TEST_EDITOR_BODY", "\n## Handoff\nEdited as user.\n")
+	if stdout, stderr, code := runCLIHumanError(t, "edit", id); code != 0 || !strings.Contains(stdout, "edited "+id) || !strings.Contains(stderr, "actor=user") {
 		t.Fatalf("no-actor edit: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("rejected edits changed TASK.md")
+	if !bytes.Contains(after, []byte("Edited as user.")) {
+		t.Fatal("fallback user edit did not publish")
 	}
 }
 
@@ -170,6 +236,7 @@ func TestInteractiveEditRechecksOwnershipBeforePublication(t *testing.T) {
 	t.Chdir(dir)
 	mustCLI(t, "init")
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Ownership race", "Keep the newer owner safe."))["id"].(string)
+	mustCLI(t, "claim", id, "--actor", "worker")
 	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited draft must not publish.\n")
 	t.Setenv("EDITOR", editor)
 	t.Setenv("TICKET_ACTOR", "worker")
@@ -182,6 +249,10 @@ func TestInteractiveEditRechecksOwnershipBeforePublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := domain.Release(st, id, domain.ReleaseOptions{Actor: "worker"}); err != nil {
+		st.Close()
+		t.Fatalf("concurrent release: %v", err)
+	}
 	if _, err := domain.Claim(st, id, domain.ClaimOptions{Actor: "other"}); err != nil {
 		st.Close()
 		t.Fatalf("concurrent claim: %v", err)
@@ -190,7 +261,7 @@ func TestInteractiveEditRechecksOwnershipBeforePublication(t *testing.T) {
 	releaseEditor(t, release)
 	err = <-result
 	var ce *contract.Error
-	if !errors.As(err, &ce) || ce.Code != contract.ErrAlreadyClaimed {
+	if !errors.As(err, &ce) || ce.Code != contract.ErrConflict {
 		t.Fatalf("ownership race error=%v", err)
 	}
 	if !strings.Contains(ce.Message, "Edited draft preserved at:") {

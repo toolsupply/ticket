@@ -42,14 +42,21 @@ func Run(args []string, out io.Writer) int {
 	}
 	jsonOutput := jsonRequested(args)
 	var stdout bytes.Buffer
-	err := dispatch(args, &stdout)
+	var err error
+	if watchInvocation(args) {
+		err = dispatchLive(args, &stdout, out)
+	} else {
+		err = dispatch(args, &stdout)
+	}
 	if err == nil {
-		if !jsonOutput && shouldPage(args, stdout.Len()) {
-			if pageWithLess(stdout.Bytes()) {
-				return 0
+		if stdout.Len() > 0 {
+			if !jsonOutput && shouldPage(args, stdout.Len()) {
+				if pageWithLess(stdout.Bytes()) {
+					return 0
+				}
 			}
+			out.Write(stdout.Bytes())
 		}
-		out.Write(stdout.Bytes())
 		return 0
 	}
 	var ce *contract.Error
@@ -68,16 +75,37 @@ func Run(args []string, out io.Writer) int {
 	return contract.ExitCode(ce.Code)
 }
 
+func dispatchLive(args []string, stdout *bytes.Buffer, out io.Writer) error {
+	g := globalOpts{json: jsonRequested(args), scopeName: strings.TrimSpace(os.Getenv("TICKET_SCOPE")), liveWriter: out}
+	return dispatchWithGlobals(args, stdout, g, nil, os.Stdin, false)
+}
+
+func watchInvocation(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-j" || args[i] == "--json" || args[i] == "--debug":
+			continue
+		case args[i] == "-c" || args[i] == "--config" || args[i] == "--scope":
+			i++
+		case strings.HasPrefix(args[i], "--config=") || strings.HasPrefix(args[i], "--scope="):
+			continue
+		default:
+			return canonicalCommand(args[i]) == "watch"
+		}
+	}
+	return false
+}
+
 func humanErrorMessage(ce *contract.Error) string {
 	if ce == nil || len(ce.Details) == 0 {
 		if ce == nil {
 			return "Internal error."
 		}
-		return ce.Message
+		return safeSingleLine(ce.Message)
 	}
 	raw, ok := ce.Details["diagnostics"]
 	if !ok {
-		return ce.Message
+		return safeSingleLine(ce.Message)
 	}
 	var diagnostics []map[string]any
 	switch values := raw.(type) {
@@ -99,11 +127,11 @@ func humanErrorMessage(ce *contract.Error) string {
 			continue
 		}
 		if line, ok := diagnostic["line"].(int); ok && line > 0 {
-			return fmt.Sprintf("%s (line %d: %s)", ce.Message, line, detail)
+			return fmt.Sprintf("%s (line %d: %s)", safeSingleLine(ce.Message), line, safeSingleLine(detail))
 		}
-		return ce.Message + " (" + detail + ")"
+		return safeSingleLine(ce.Message) + " (" + safeSingleLine(detail) + ")"
 	}
-	return ce.Message
+	return safeSingleLine(ce.Message)
 }
 
 func shouldPage(args []string, size int) bool {
@@ -168,7 +196,11 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 	if executor != nil {
 		session = &executor.state
 		g = executor.globalOpts
-		g.json = jsonRequested(args)
+		if g.machineTransport {
+			g.json = true
+		} else {
+			g.json = jsonRequested(args)
+		}
 		g.debug = false
 		g.configExplicit = false
 		g.scopeExplicit = false
@@ -194,7 +226,7 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 	if executor != nil {
 		done = executor.done
 	}
-	ctx := &commandContext{stdout: stdout, cwd: commandCWD, globalOpts: g, session: session, executor: executor, done: done, input: input, inputProvided: inputProvided}
+	ctx := &commandContext{stdout: stdout, cwd: commandCWD, globalOpts: g, session: session, executor: executor, done: done, input: input, inputProvided: inputProvided, liveWriter: g.liveWriter}
 	if inputProvided && (len(args) == 0 || !commandAcceptsInvocationInput(args[0])) {
 		return unexpectedInvocationInput("")
 	}
@@ -259,6 +291,8 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 		return cmdNext(ctx, rest)
 	case "wait":
 		return cmdWait(ctx, rest)
+	case "watch":
+		return cmdWatch(ctx, rest)
 	case "show":
 		return cmdShow(ctx, rest)
 	case "edit":
@@ -447,7 +481,7 @@ func cmdVersion(ctx *commandContext, rest []string) error {
 		return err
 	}
 	if !ctx.json {
-		fmt.Fprintf(ctx.stdout, "ticket %s (api %d, storage %d)\n", Version, APIVersion, StorageVersion)
+		fmt.Fprintf(ctx.stdout, "ticket %s (api %d, storage %d)\n", safeSingleLine(Version), APIVersion, StorageVersion)
 		return nil
 	}
 	return emitJSON(ctx.stdout, versionOutput{

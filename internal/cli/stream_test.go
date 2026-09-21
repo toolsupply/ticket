@@ -82,6 +82,39 @@ func TestJSONStreamFlagSpellingsAndOrder(t *testing.T) {
 	}
 }
 
+func TestJSONStreamTransportCannotBeDowngraded(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Immutable stream", "Keep transport JSON."))["id"].(string)
+	started := filepath.Join(dir, "editor-started")
+	release := filepath.Join(dir, "editor-release")
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-block"))
+	t.Setenv("EDITOR_STARTED", started)
+	t.Setenv("EDITOR_RELEASE", release)
+
+	input := strings.Join([]string{
+		streamRequest(t, []string{"version", "--json=false"}, nil),
+		streamRequest(t, []string{"version", "--json=0"}, nil),
+		streamRequest(t, []string{"edit", id, "--json=false"}, nil),
+		streamRequest(t, []string{"version"}, nil),
+	}, "\n") + "\n"
+	out, stderr, code := runJSONStream(t, input)
+	if code != 0 || stderr != "" {
+		t.Fatalf("immutable JSON stream: exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	responses := decodeJSONStreamResponses(t, out)
+	if len(responses) != 4 || streamErrorCode(responses[0]) != "invalid_argument" || streamErrorCode(responses[1]) != "invalid_argument" || streamErrorCode(responses[2]) != "invalid_argument" || responses[3]["version"] != Version {
+		t.Fatalf("immutable JSON responses: %v", responses)
+	}
+	if fileExists(started) {
+		t.Fatal("editor launched after JSON transport downgrade attempt")
+	}
+}
+
 func TestInteractiveFlagNamesRemainOneShotCommandValues(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

@@ -9,6 +9,18 @@ import (
 	"unsafe"
 )
 
+var rootRename = func(root *os.Root, oldname, newname string) error {
+	return root.Rename(oldname, newname)
+}
+
+func publishReplaceRoot(root *os.Root, target, tmp string) error {
+	// Root.Rename is the descriptor-relative replacement primitive. The
+	// managed contract requires complete replacement and preservation of the
+	// canonical target when publication fails; native tests exercise both
+	// properties through Store.ReplaceTask.
+	return rootRename(root, tmp, target)
+}
+
 func recoverFailedReplacement(target, tmp string) error {
 	if _, err := os.Lstat(target); err == nil {
 		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {

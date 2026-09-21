@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -148,11 +149,11 @@ func List(st *store.Store, opts ListOptions) (*ListResult, error) {
 	case "modified_desc":
 		modified := make(map[string]time.Time, len(matches))
 		for _, ticket := range matches {
-			info, err := os.Stat(filepath.Join(st.Root, ticket.TaskRelPath))
+			info, err := st.TaskModTime(ticket.ID)
 			if err != nil {
 				return nil, wrapStoreError("ticket file", err)
 			}
-			modified[ticket.ID] = info.ModTime()
+			modified[ticket.ID] = info
 		}
 		sort.Slice(matches, func(i, j int) bool {
 			if !modified[matches[i].ID].Equal(modified[matches[j].ID]) {
@@ -293,7 +294,7 @@ func sortTickets(tickets []*Ticket) {
 	})
 }
 func scanWith(st *store.Store) ([]*Ticket, []DiagnosticSummary, error) {
-	entries, err := os.ReadDir(st.Root)
+	entries, err := st.RootEntries()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -321,8 +322,7 @@ func scanWith(st *store.Store) ([]*Ticket, []DiagnosticSummary, error) {
 		if !identity.ValidID(name) {
 			continue
 		}
-		dir := filepath.Join(st.Root, name)
-		info, err := os.Lstat(dir)
+		info, err := st.TicketDirInfo(name)
 		if err != nil || !info.IsDir() {
 			diags = append(diags, DiagnosticSummary{Path: name, Message: "ticket path is not a directory"})
 			continue
@@ -448,11 +448,41 @@ func taskPath(st *store.Store, id string) (string, error) {
 }
 
 func readTaskFile(st *store.Store, id string) ([]byte, error) {
+	data, info, rootErr := st.ReadTask(id, int64(TaskMaxBytes))
+	if rootErr == nil {
+		return data, nil
+	}
+	if info != nil || rootErr != nil {
+		if errors.Is(rootErr, store.ErrReadLimit) {
+			size := int64(0)
+			if info != nil {
+				size = info.Size()
+			}
+			return nil, contract.NewError(contract.ErrFileTooLarge,
+				"TASK.md exceeds the 1 MiB managed-file limit.",
+				map[string]any{"path": id + "/TASK.md", "size": size})
+		}
+		if ce, ok := rootErr.(*contract.Error); ok {
+			if ce.Code == contract.ErrFileTooLarge {
+				size := int64(0)
+				if info != nil {
+					size = info.Size()
+				}
+				return nil, contract.NewError(contract.ErrFileTooLarge,
+					"TASK.md exceeds the 1 MiB managed-file limit.",
+					map[string]any{"path": id + "/TASK.md", "size": size})
+			}
+			if ce.Code != contract.ErrNotFound {
+				return nil, rootErr
+			}
+		}
+		return nil, rootErr
+	}
 	task, err := taskPath(st, id)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(task)
+	info, err = os.Lstat(task)
 	if err != nil {
 		return nil, contract.NewError(contract.ErrIOError, "TASK.md lookup failed: "+err.Error(), map[string]any{"id": id})
 	}

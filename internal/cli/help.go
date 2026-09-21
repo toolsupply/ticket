@@ -24,9 +24,10 @@ Getting started:
 Finding work:
   list       List tickets
   grep       Find tickets by text or regular expression
-  ready [open|review]  Inspect eligible work
-  next [open|review]   Select the next eligible ticket
-  wait [open|review]   Wait for eligible work
+  ready      Inspect eligible work
+  next       Select the next eligible ticket
+  wait       Wait for eligible work
+  watch      Watch live ticket activity
   show       Show a ticket
   status     Show concise ticket status
 
@@ -138,7 +139,7 @@ func orderedHelpOptions(options []contract.Flag) []contract.Flag {
 
 func commandHasNoActor(name string) bool {
 	switch name {
-	case "init", "create", "delete", "list", "grep", "ready", "show", "edit", "status", "path", "state", "check", "version", "actor", "info", "help":
+	case "init", "create", "delete", "list", "grep", "ready", "show", "status", "path", "state", "check", "version", "actor", "info", "help", "watch":
 		return true
 	default:
 		return false
@@ -188,6 +189,7 @@ func commandUsage(name string) string {
 		"ready":   "[open|review]",
 		"next":    "[open|review]",
 		"wait":    "[open|review]",
+		"watch":   "",
 		"show":    "[ID]",
 		"actor":   "",
 		"edit":    "[ID]",

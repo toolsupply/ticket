@@ -4,6 +4,10 @@ package store
 
 import "os"
 
+func publishReplaceRoot(root *os.Root, target, tmp string) error {
+	return root.Rename(tmp, target)
+}
+
 func recoverFailedReplacement(target, tmp string) error {
 	if _, err := os.Lstat(target); err == nil {
 		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {

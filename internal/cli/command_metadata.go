@@ -21,6 +21,7 @@ var cliCommands = []commandMetadata{
 	{name: "ready"},
 	{name: "next"},
 	{name: "wait"},
+	{name: "watch"},
 	{name: "show", objectFirst: true},
 	{name: "edit", objectFirst: true, mutation: true},
 	{name: "submit", objectFirst: true, mutation: true},

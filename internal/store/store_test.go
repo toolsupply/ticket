@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -516,6 +517,117 @@ func TestPublishTicketRejectsExternalSentinelCollision(t *testing.T) {
 	data, err := os.ReadFile(sentinel)
 	if err != nil || string(data) != "keep" {
 		t.Fatalf("external ticket sentinel changed: %q (%v)", data, err)
+	}
+}
+
+func TestRevalidateAfterSyncRejectsUnexpectedLocalObjects(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents replacing open .local handles")
+	}
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root, base string)
+	}{
+		{name: "symlink", setup: func(t *testing.T, root, base string) {
+			external := filepath.Join(base, "external-local")
+			if err := os.Mkdir(external, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			symlinkOrSkip(t, external, filepath.Join(root, ".local"))
+		}},
+		{name: "regular file", setup: func(t *testing.T, root, _ string) {
+			if err := os.RemoveAll(filepath.Join(root, ".local")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".local"), []byte("unexpected"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := initTicketRoot(t, base)
+			st, err := Open(base, OpenOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			tt.setup(t, root, base)
+			err = st.RevalidateAfterSync()
+			if err == nil {
+				t.Fatal("unexpected .local object was accepted")
+			}
+			var ce *contract.Error
+			if !asContract(err, &ce) || ce.Code != contract.ErrInvalidRepository {
+				t.Fatalf("wrong error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRevalidateAfterSyncClosesRootWhenHeldLockStatFails(t *testing.T) {
+	base := t.TempDir()
+	initTicketRoot(t, base)
+	st, err := Open(base, OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	closed := 0
+	previousClose := closeRevalidateRoot
+	closeRevalidateRoot = func(root *os.Root) {
+		closed++
+		_ = root.Close()
+	}
+	t.Cleanup(func() { closeRevalidateRoot = previousClose })
+	if err := st.Lock.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevalidateAfterSync(); err == nil {
+		t.Fatal("closed held lock was accepted")
+	}
+	if closed != 1 {
+		t.Fatalf("current root close count=%d, want 1", closed)
+	}
+}
+
+func TestRevalidateAfterSyncReacquiresReplacementLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents replacing the open .local lock")
+	}
+	base := t.TempDir()
+	root := initTicketRoot(t, base)
+	st, err := Open(base, OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLocal := filepath.Join(root, ".local-old")
+	if err := os.Rename(filepath.Join(root, ".local"), oldLocal); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".local"), 0o755); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".local", "lock"), nil, 0o644); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := st.RevalidateAfterSync(); err != nil {
+		st.Close()
+		t.Fatalf("revalidate replacement: %v", err)
+	}
+	defer st.Close()
+	other, err := AcquireLock(filepath.Join(root, ".local"), 50*time.Millisecond)
+	if err == nil {
+		other.Release()
+		t.Fatal("replacement lock was not held")
+	}
+	var ce *contract.Error
+	if !asContract(err, &ce) || ce.Code != contract.ErrLockTimeout {
+		t.Fatalf("wrong replacement lock error: %v", err)
 	}
 }
 

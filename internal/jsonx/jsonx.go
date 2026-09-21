@@ -16,7 +16,7 @@ import (
 type frame struct {
 	isObject bool
 	wantKey  bool
-	keys     []string
+	keys     map[string]struct{}
 }
 
 // Validate scans one JSON document and rejects duplicate object keys at
@@ -44,7 +44,7 @@ func Validate(data []byte) error {
 		case json.Delim:
 			switch t {
 			case '{':
-				stack = append(stack, frame{isObject: true, wantKey: true})
+				stack = append(stack, frame{isObject: true, wantKey: true, keys: make(map[string]struct{})})
 			case '[':
 				stack = append(stack, frame{isObject: false})
 			case '}', ']':
@@ -67,12 +67,10 @@ func Validate(data []byte) error {
 			}
 			f := &stack[len(stack)-1]
 			if f.isObject && f.wantKey {
-				for _, k := range f.keys {
-					if k == t {
-						return fmt.Errorf("duplicate key %q", t)
-					}
+				if _, exists := f.keys[t]; exists {
+					return fmt.Errorf("duplicate key %q", t)
 				}
-				f.keys = append(f.keys, t)
+				f.keys[t] = struct{}{}
 				f.wantKey = false
 			} else if f.isObject {
 				f.wantKey = true // a scalar value completed in an object

@@ -21,7 +21,7 @@ type EditResult struct {
 
 func cmdEdit(ctx *commandContext, args []string) error {
 	p := &parser{}
-	ctx.registerWithoutActor(p)
+	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
 	if err := p.parse(args); err != nil {

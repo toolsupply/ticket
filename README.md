@@ -1,5 +1,10 @@
 # ticket
 
+[![CI](https://github.com/toolsupply/ticket/actions/workflows/ci.yml/badge.svg)](https://github.com/toolsupply/ticket/actions/workflows/ci.yml)
+[![GitHub License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/toolsupply/ticket/LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/toolsupply/ticket)](https://github.com/toolsupply/ticket/blob/main/go.mod)
+[![Dependencies](https://img.shields.io/badge/dependencies-stdlib_only-blue)](https://github.com/toolsupply/ticket/blob/main/go.mod)
+
 A repository-local task manager and issue tracker for humans and coding agents.
 
 `ticket` manages work as Markdown tickets stored alongside your source code. Tickets stay with the repository, remain human-readable, and can be managed through a single CLI by humans, scripts, and autonomous coding agents.
@@ -57,9 +62,8 @@ Download `SHA256SUMS` with the archive and verify the checksum before
 extracting it. Each archive contains only the executable: `ticket` on Unix
 systems and `ticket.exe` on Windows. Place it somewhere on `PATH`.
 
-GitHub Releases are the authoritative source for updates. Users who want a
-stronger provenance check can optionally verify a downloaded release archive
-with GitHub CLI:
+GitHub Releases are the authoritative source for updates. All commits and release
+tags are signed by the same public key. Release archives include GitHub artifact attestations:
 
 ```sh
 gh attestation verify ticket-linux-amd64.tar.gz -R toolsupply/ticket
@@ -125,11 +129,20 @@ ticket close
 
 The submit and review lifecycle states are optional; tickets can be closed or rejected from any state.
 
+### Live activity watch
+
+Follow ticket changes from the current point in time:
+
+```sh
+ticket watch
+ticket watch --tag backend --event claimed --event submitted
+```
+
 ### Hints
 
 - `ticket -i` is a simple shell mode where human does not have to type ticket in front of every command
 - Use shell command execution in your harness to control ticket, for example `!ticket list open`
-- Use `ticket ready` to check if there are actionable tickets or `ticket list review` to check if there is anything to reivew
+- Use `ticket ready` to check if there are actionable tickets or `ticket list review` to check if there is anything to review
 - Instruct reviewer agent to close tickets once happy to bypass human signoff, example prompt also trigging Codex goals:
 
 ```sh
@@ -367,6 +380,8 @@ export TICKET_SCM_MODE=sync
 
 With Git synchronization enabled, `ticket` updates before reading and commits and pushes ticket mutations using the current branch and its configured upstream.
 
+An explicit push destination does not isolate history: pushing a branch necessarily publishes any unpublished ancestor commits required by that branch. Use a dedicated Ticket branch or worktree when that isolation matters.
+
 `ticket` never creates or switches branches or worktrees. It uses the checkout containing `TICKET_REPOSITORY` exactly as configured.
 
 ### Sparse ticket worktree
@@ -412,6 +427,21 @@ This is suitable when one coding agent works in the checkout and other participa
 
 In this configuration, Git synchronization performed by `ticket` advances the same branch and working tree used for normal development.
 
+### Security and operational boundaries
+
+Ticket's workflow metadata coordinates people and agents; it is not an
+authentication or authorization system. `TICKET_ACTOR` and `--actor` identify a
+worker but do not grant permissions. Independent review and human closure are
+process boundaries, not a substitute for repository access controls.
+
+The `!` shell executes commands through the user's normal shell and operating
+system permissions. SCM hooks and configured editor, decorator, Git, or SVN
+commands are likewise external programs; Ticket does not sandbox them.
+
+An explicit Git push destination narrows what Ticket publishes, but it cannot
+isolate a shared branch from its required unpublished ancestor commits. Use a
+dedicated branch or worktree when history isolation matters.
+
 ## Building
 
 Toolchain: Go `1.26.8`. No CGO or third-party Go dependencies are required.
@@ -426,6 +456,18 @@ make build && ./bin/ticket version
 go test ./...
 go vet ./...
 go test -race ./...
+```
+
+For a focused race check while developing, specify the changed package:
+
+```sh
+make race RACE_PKGS=./internal/cli
+```
+
+Run a clean-cache full race check before submitting work:
+
+```sh
+make race-fresh
 ```
 
 ## Inspiration

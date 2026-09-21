@@ -2,6 +2,9 @@ package store
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,13 +20,15 @@ type Store struct {
 	Root string
 	Cfg  Config
 	Lock *Lock
+	root *os.Root
 
 	ids identity.IDSource
 }
 
 var (
-	deleteRename    = os.Rename
-	deleteRemoveAll = os.RemoveAll
+	deleteRename        = os.Rename
+	deleteRemoveAll     = os.RemoveAll
+	closeRevalidateRoot = func(root *os.Root) { _ = root.Close() }
 )
 
 const maxDeletionStageAttempts = 16
@@ -49,32 +54,167 @@ func Open(cwd string, o OpenOptions) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := LoadConfig(root)
+	rootHandle, err := os.OpenRoot(root)
 	if err != nil {
+		return nil, wrapIO("ticket repository", err)
+	}
+	cfg, err := loadConfigRoot(rootHandle)
+	if err != nil {
+		rootHandle.Close()
 		return nil, err
 	}
-	localDir := filepath.Join(root, ".local")
-	if err := ensureLocalDir(localDir); err != nil {
+	if err := ensureLocalRoot(rootHandle); err != nil {
+		rootHandle.Close()
 		return nil, err
 	}
-	lk, err := AcquireLock(localDir, 5*time.Second)
+	lk, err := AcquireLockRoot(rootHandle, 5*time.Second)
 	if err != nil {
+		rootHandle.Close()
 		return nil, err
 	}
 	return &Store{
 		Root: root,
 		Cfg:  cfg,
 		Lock: lk,
+		root: rootHandle,
 		ids:  o.IDSource,
 	}, nil
 }
 
 // Close releases the lock.
 func (st *Store) Close() {
-	if st == nil || st.Lock == nil {
+	if st == nil {
 		return
 	}
-	st.Lock.Release()
+	if st.Lock != nil {
+		st.Lock.Release()
+	}
+	if st.root != nil {
+		st.root.Close()
+		st.root = nil
+	}
+}
+
+func (st *Store) openRoot() (*os.Root, bool, error) {
+	if st.root != nil {
+		return st.root, false, nil
+	}
+	r, err := os.OpenRoot(st.Root)
+	return r, true, err
+}
+
+// RevalidateAfterSync verifies the repository's runtime state after an SCM
+// operation that may have replaced files under the ticket root. If the live
+// lock file changed, it acquires the replacement before releasing the old
+// lock so callers never continue without a lock over the current path.
+func (st *Store) RevalidateAfterSync() error {
+	if st == nil || st.Lock == nil || st.Lock.file == nil {
+		return contract.NewError(contract.ErrInvalidRepository,
+			"Ticket repository lock is not active.", nil)
+	}
+	currentRoot, err := os.OpenRoot(st.Root)
+	if err != nil {
+		return wrapIO("ticket repository", err)
+	}
+	lockInfo, err := validateLiveLocalRoot(currentRoot)
+	if err != nil {
+		closeRevalidateRoot(currentRoot)
+		return err
+	}
+	if heldInfo, statErr := st.Lock.file.Stat(); statErr != nil {
+		closeRevalidateRoot(currentRoot)
+		return contract.NewError(contract.ErrIOError,
+			"Cannot inspect the held ticket-root lock: "+statErr.Error(), nil)
+	} else if !os.SameFile(heldInfo, lockInfo) {
+		next, acquireErr := AcquireLockRoot(currentRoot, 5*time.Second)
+		if acquireErr != nil {
+			closeRevalidateRoot(currentRoot)
+			return acquireErr
+		}
+		previous := st.Lock
+		st.Lock = next
+		if releaseErr := previous.Release(); releaseErr != nil {
+			_ = next.Release()
+			st.Lock = previous
+			closeRevalidateRoot(currentRoot)
+			return contract.NewError(contract.ErrIOError,
+				"Cannot release the stale ticket-root lock: "+releaseErr.Error(), nil)
+		}
+		if st.root != nil {
+			st.root.Close()
+		}
+		st.root = currentRoot
+	} else {
+		closeRevalidateRoot(currentRoot)
+	}
+	cfg, err := loadConfigRoot(st.root)
+	if err != nil {
+		return err
+	}
+	st.Cfg = cfg
+	return nil
+}
+
+func validateLiveLocal(root string) (os.FileInfo, error) {
+	localPath := filepath.Join(root, ".local")
+	info, err := os.Lstat(localPath)
+	if os.IsNotExist(err) {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local disappeared during SCM synchronization; refusing to continue.", nil)
+	}
+	if err != nil {
+		return nil, contract.NewError(contract.ErrIOError,
+			"Cannot inspect .local after SCM synchronization: "+err.Error(), nil)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local must remain a real directory after SCM synchronization.", nil)
+	}
+	lockPath := filepath.Join(localPath, "lock")
+	lockInfo, err := os.Lstat(lockPath)
+	if os.IsNotExist(err) {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local/lock disappeared during SCM synchronization; refusing to continue.", nil)
+	}
+	if err != nil {
+		return nil, contract.NewError(contract.ErrIOError,
+			"Cannot inspect .local/lock after SCM synchronization: "+err.Error(), nil)
+	}
+	if lockInfo.Mode()&os.ModeSymlink != 0 || !lockInfo.Mode().IsRegular() {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local/lock must remain a regular file after SCM synchronization.", nil)
+	}
+	return lockInfo, nil
+}
+
+func validateLiveLocalRoot(root *os.Root) (os.FileInfo, error) {
+	info, err := root.Lstat(".local")
+	if os.IsNotExist(err) {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local disappeared during SCM synchronization; refusing to continue.", nil)
+	}
+	if err != nil {
+		return nil, contract.NewError(contract.ErrIOError,
+			"Cannot inspect .local after SCM synchronization: "+err.Error(), nil)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local must remain a real directory after SCM synchronization.", nil)
+	}
+	lockInfo, err := root.Lstat(filepath.Join(".local", "lock"))
+	if os.IsNotExist(err) {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local/lock disappeared during SCM synchronization; refusing to continue.", nil)
+	}
+	if err != nil {
+		return nil, contract.NewError(contract.ErrIOError,
+			"Cannot inspect .local/lock after SCM synchronization: "+err.Error(), nil)
+	}
+	if lockInfo.Mode()&os.ModeSymlink != 0 || !lockInfo.Mode().IsRegular() {
+		return nil, contract.NewError(contract.ErrInvalidRepository,
+			".local/lock must remain a regular file after SCM synchronization.", nil)
+	}
+	return lockInfo, nil
 }
 
 // NewID generates a persistent random object ID with the given prefix.
@@ -95,6 +235,80 @@ func (st *Store) taskPath(id string) (string, error) {
 	return filepath.Join(st.Root, id, "TASK.md"), nil
 }
 
+func (st *Store) taskName(id string) (string, error) {
+	if _, _, ok := ParseID(id); !ok {
+		return "", contract.NewError(contract.ErrInvalidArgument,
+			"Reference is not a valid ticket ID.", map[string]any{"id": id})
+	}
+	return filepath.Join(id, "TASK.md"), nil
+}
+
+// ReadTask validates and reads a managed TASK.md through Store's stable root.
+func (st *Store) ReadTask(id string, limit int64) ([]byte, os.FileInfo, error) {
+	name, err := st.taskName(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	r, ephemeral, err := st.openRoot()
+	if err != nil {
+		return nil, nil, wrapIO("ticket repository", err)
+	}
+	if ephemeral {
+		defer r.Close()
+	}
+	info, err := r.Lstat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, contract.NewError(contract.ErrNotFound, "TASK.md not found.", map[string]any{"id": id})
+		}
+		return nil, nil, contract.NewError(contract.ErrIOError, "TASK.md lookup failed: "+err.Error(), map[string]any{"id": id})
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, nil, contract.NewError(contract.ErrInvalidRepository, "TASK.md must be a regular file and must not be a symlink.", map[string]any{"id": id})
+	}
+	beforeManagedOpen()
+	f, err := openRootNoFollow(r, name, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, info, err
+	}
+	openedInfo, statErr := f.Stat()
+	if statErr != nil {
+		f.Close()
+		return nil, info, statErr
+	}
+	if !os.SameFile(info, openedInfo) {
+		f.Close()
+		return nil, info, fmt.Errorf("TASK.md changed during open")
+	}
+	data, err := readBoundedOpenFile(f, limit)
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, info, err
+	}
+	return data, info, nil
+}
+
+func (st *Store) RootEntries() ([]fs.DirEntry, error) {
+	if st.root == nil {
+		return os.ReadDir(st.Root)
+	}
+	return fs.ReadDir(st.root.FS(), ".")
+}
+
+func (st *Store) TicketDirInfo(id string) (os.FileInfo, error) {
+	r, ephemeral, err := st.openRoot()
+	if err != nil {
+		return nil, wrapIO("ticket repository", err)
+	}
+	if ephemeral {
+		defer r.Close()
+	}
+	return r.Lstat(id)
+}
+
 // TicketExists reports whether a canonical ticket directory already occupies
 // the candidate ID. It is used to avoid validating an occupied ID as a new
 // graph node before the publication collision check.
@@ -103,7 +317,14 @@ func (st *Store) TicketExists(id string) (bool, error) {
 		return false, contract.NewError(contract.ErrInvalidArgument,
 			"Reference is not a valid ticket ID.", map[string]any{"id": id})
 	}
-	_, err := os.Lstat(filepath.Join(st.Root, id))
+	r, ephemeral, err := st.openRoot()
+	if err != nil {
+		return false, wrapIO("ticket repository", err)
+	}
+	if ephemeral {
+		defer r.Close()
+	}
+	_, err = r.Lstat(id)
 	if err == nil {
 		return true, nil
 	}
@@ -122,6 +343,62 @@ func (st *Store) DeleteTicket(id string) error {
 		return contract.NewError(contract.ErrInvalidArgument,
 			"Reference is not a valid ticket ID.", map[string]any{"id": id})
 	}
+	if st.root == nil {
+		return st.deleteTicketPath(id)
+	}
+	r, ephemeral, err := st.openRoot()
+	if err != nil {
+		return wrapIO("ticket repository", err)
+	}
+	if ephemeral {
+		defer r.Close()
+	}
+	info, err := r.Lstat(id)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return contract.NewError(contract.ErrNotFound,
+				"Ticket not found.", map[string]any{"id": id})
+		}
+		return contract.NewError(contract.ErrIOError,
+			"Cannot inspect ticket: "+err.Error(), map[string]any{"id": id})
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return contract.NewError(contract.ErrInvalidRepository,
+			"Ticket target must be a real directory.", map[string]any{"id": id})
+	}
+	stage, err := temporaryName(id)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < maxDeletionStageAttempts; attempt++ {
+		if _, err := r.Lstat(filepath.Join(".local", stage)); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return contract.NewError(contract.ErrIOError,
+				"Cannot inspect deletion staging path: "+err.Error(), map[string]any{"id": id})
+		}
+		stage, err = temporaryName(id)
+		if err != nil {
+			return err
+		}
+		if attempt == maxDeletionStageAttempts-1 {
+			return contract.NewError(contract.ErrInternalError,
+				"Deletion staging collisions exceeded the retry budget.", map[string]any{"id": id})
+		}
+	}
+	if err := r.Rename(id, filepath.Join(".local", stage)); err != nil {
+		return contract.NewError(contract.ErrIOError,
+			"Cannot stage ticket for deletion: "+err.Error(), map[string]any{"id": id})
+	}
+	if err := r.RemoveAll(filepath.Join(".local", stage)); err != nil {
+		return contract.NewError(contract.ErrIOError,
+			"Ticket was removed from the repository, but staged cleanup is incomplete: "+err.Error(),
+			map[string]any{"id": id, "removal_applied": true})
+	}
+	return nil
+}
+
+func (st *Store) deleteTicketPath(id string) error {
 	path := filepath.Join(st.Root, id)
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -171,6 +448,17 @@ func (st *Store) DeleteTicket(id string) error {
 // TaskModTime returns the filesystem modification time of one managed
 // TASK.md. It preserves the same path and symlink checks as ticket reads.
 func (st *Store) TaskModTime(id string) (time.Time, error) {
+	if st.root != nil {
+		name, err := st.taskName(id)
+		if err != nil {
+			return time.Time{}, err
+		}
+		info, err := st.root.Stat(name)
+		if err != nil {
+			return time.Time{}, wrapIO("TASK.md", err)
+		}
+		return info.ModTime(), nil
+	}
 	path, err := st.taskPath(id)
 	if err != nil {
 		return time.Time{}, err
@@ -299,8 +587,11 @@ func checkInitTarget(root string) error {
 			return contract.NewError(contract.ErrInvalidRepository,
 				"Init target contains a non-regular manager file.", nil)
 		}
-		data, err := os.ReadFile(path)
+		data, err := ReadBoundedFile(path, 128<<10)
 		if err != nil {
+			if errors.Is(err, ErrReadLimit) {
+				return contract.NewError(contract.ErrFileTooLarge, "Init metadata exceeds the 128 KiB limit.", nil)
+			}
 			return contract.NewError(contract.ErrIOError,
 				"Cannot read init file: "+err.Error(), nil)
 		}
@@ -319,6 +610,24 @@ func ensureLocalDir(localDir string) error {
 	info, err := os.Lstat(localDir)
 	if os.IsNotExist(err) {
 		if err := os.Mkdir(localDir, 0o755); err != nil {
+			return contract.NewError(contract.ErrIOError, "Cannot prepare .local: "+err.Error(), nil)
+		}
+		return nil
+	}
+	if err != nil {
+		return contract.NewError(contract.ErrIOError, "Cannot inspect .local: "+err.Error(), nil)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return contract.NewError(contract.ErrInvalidRepository,
+			".local must be a real directory and must not be a symlink.", nil)
+	}
+	return nil
+}
+
+func ensureLocalRoot(root *os.Root) error {
+	info, err := root.Lstat(".local")
+	if os.IsNotExist(err) {
+		if err := root.Mkdir(".local", 0o755); err != nil {
 			return contract.NewError(contract.ErrIOError, "Cannot prepare .local: "+err.Error(), nil)
 		}
 		return nil
@@ -374,14 +683,26 @@ func (st *Store) ResolveID(id string, requireExists bool) (string, error) {
 			"Reference is not a valid ticket ID.", map[string]any{"id": id})
 	}
 	if requireExists {
-		dir := filepath.Join(st.Root, id)
-		le, err := os.Lstat(dir)
+		r, ephemeral, err := st.openRoot()
+		if err != nil {
+			return "", wrapIO("ticket repository", err)
+		}
+		if ephemeral {
+			defer r.Close()
+		}
+		le, err := r.Lstat(id)
 		if err != nil || !le.IsDir() {
 			return "", dangling(id)
 		}
 	} else {
-		dir := filepath.Join(st.Root, id)
-		le, err := os.Lstat(dir)
+		r, ephemeral, err := st.openRoot()
+		if err != nil {
+			return "", wrapIO("ticket repository", err)
+		}
+		if ephemeral {
+			defer r.Close()
+		}
+		le, err := r.Lstat(id)
 		if err != nil || !le.IsDir() {
 			return "", contract.NewError(contract.ErrNotFound,
 				"Ticket not found.", map[string]any{"id": id})
@@ -422,7 +743,13 @@ func dangling(id string) error {
 // listTicketDirs returns all existing ticket IDs (directory names) in
 // the repository, in lexicographic order.
 func (st *Store) listTicketDirs() ([]string, error) {
-	entries, err := os.ReadDir(st.Root)
+	var entries []fs.DirEntry
+	var err error
+	if st.root != nil {
+		entries, err = fs.ReadDir(st.root.FS(), ".")
+	} else {
+		entries, err = os.ReadDir(st.Root)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

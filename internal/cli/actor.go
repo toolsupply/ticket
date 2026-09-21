@@ -26,7 +26,7 @@ func cmdActor(ctx *commandContext, args []string) error {
 		if actor == "" {
 			fmt.Fprintln(ctx.stdout, "no actor configured")
 		} else {
-			fmt.Fprintln(ctx.stdout, actor)
+			fmt.Fprintln(ctx.stdout, safeSingleLine(actor))
 		}
 		return nil
 	}

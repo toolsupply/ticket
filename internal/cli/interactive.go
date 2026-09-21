@@ -66,7 +66,7 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 // editWithEditor snapshots an existing ticket under the lock, releases it for
 // all editor interaction, and publishes only after an optimistic byte check.
 func editWithEditor(ctx *commandContext, ref string) error {
-	st, _, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
+	st, backend, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
 		return err
 	}
@@ -81,9 +81,37 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		return err
 	}
 	actor, _ := ctx.effectiveActor()
-	if err := checkEditOwnership(beforeTicket, actor); err != nil {
-		st.Close()
-		return err
+	if actor == "" {
+		actor = "user"
+	}
+	shouldClaim := beforeTicket.Assignee == "" && beforeTicket.State == "review"
+	if beforeTicket.Assignee == "" && beforeTicket.State == "open" {
+		readiness, err := domain.Readiness(st, full)
+		if err != nil {
+			st.Close()
+			return err
+		}
+		shouldClaim = readiness.Ready
+	}
+	if shouldClaim {
+		claim, err := domain.Claim(st, full, domain.ClaimOptions{Actor: actor})
+		if err != nil {
+			st.Close()
+			return err
+		}
+		if claim.Changed {
+			if err := persistMutation(backend, st, "claim", claim); err != nil {
+				st.Close()
+				return err
+			}
+		}
+		beforeTicket, err = domain.ReadTicket(st, full)
+		if err != nil {
+			st.Close()
+			return err
+		}
+	} else if beforeTicket.Assignee != "" && beforeTicket.Assignee != actor {
+		warnEditOwnership(beforeTicket, actor)
 	}
 	original := append([]byte(nil), beforeTicket.FileBytes...)
 	draftPath, err := createDraft(st.Root, original)
@@ -97,16 +125,13 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		return err
 	}
 
-	st, backend, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
+	st, backend, err = openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
 		return preserveDraftError(err, draftPath)
 	}
 	defer st.Close()
 	current, err := domain.ReadTicket(st, full)
 	if err != nil {
-		return preserveDraftError(err, draftPath)
-	}
-	if err := checkEditOwnership(current, actor); err != nil {
 		return preserveDraftError(err, draftPath)
 	}
 	if !bytes.Equal(original, current.FileBytes) {
@@ -127,18 +152,9 @@ func editWithEditor(ctx *commandContext, ref string) error {
 	return renderHumanTo(ctx.stdout, "edit", res, false, ctx.decorator())
 }
 
-func checkEditOwnership(ticket *domain.Ticket, actor string) error {
-	if ticket.Assignee == "" {
-		return nil
-	}
-	if actor == "" {
-		return contract.NewError(contract.ErrMissingActor, "An actor is required.", nil)
-	}
-	if ticket.Assignee != actor {
-		return contract.NewError(contract.ErrAlreadyClaimed,
-			"The ticket is assigned to another actor.", map[string]any{"id": ticket.ID})
-	}
-	return nil
+func warnEditOwnership(ticket *domain.Ticket, actor string) {
+	fmt.Fprintf(os.Stderr, "warning: ticket %s is assigned to %s; editing without changing ownership (actor=%s)\n",
+		ticket.ID, ticket.Assignee, actor)
 }
 
 func createDraft(root string, data []byte) (string, error) {
@@ -195,7 +211,7 @@ func editDraft(path, id string, line int, allowRetry bool, configs ...*globalOpt
 }
 
 func retryEditor(err error, input *bufio.Reader) bool {
-	message := err.Error()
+	message := safeSingleLine(err.Error())
 	var ce *contract.Error
 	if errors.As(err, &ce) {
 		message = humanErrorMessage(ce)
