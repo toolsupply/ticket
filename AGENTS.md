@@ -113,13 +113,22 @@ Do not broaden scope while doing release-polish work.
 
 ## Validation
 
-Before considering work complete, run the relevant checks:
+For normal ticket work, run the fast repository checks before considering the
+change complete:
 
 ```sh
 go fmt ./...
 go test ./...
-go test -race ./...
 go vet ./...
 ```
 
-Also preserve the standard-library-only dependency policy and existing release/build checks.
+For concurrency-sensitive changes, run a focused race check for the affected
+package(s) when practical. The complete uncached race suite is a release gate,
+not a per-ticket local requirement; the release workflow runs:
+
+```sh
+go test -race -count=1 ./...
+```
+
+Also preserve the standard-library-only dependency policy and existing
+release/build checks.

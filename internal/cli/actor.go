@@ -8,7 +8,7 @@ type actorResult struct {
 }
 
 func cmdActor(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

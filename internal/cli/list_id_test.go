@@ -26,7 +26,7 @@ func TestListAcceptsPositionalTicketIDs(t *testing.T) {
 	if len(items) != 1 || items[0].(map[string]any)["id"] != second {
 		t.Fatalf("list by full ID: %v", listed)
 	}
-	if items[0].(map[string]any)["state"] != "completed" {
+	if items[0].(map[string]any)["state"] != "closed" {
 		t.Fatalf("list by ID should include the selected terminal ticket: %v", items[0])
 	}
 

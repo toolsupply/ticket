@@ -130,6 +130,13 @@ func TestParseBodyH1Rules(t *testing.T) {
 
 // S11: metadata restrictions.
 func TestMetadataRestrictions(t *testing.T) {
+	if _, _, _, diags := SplitMetadata([]byte("not metadata\n")); len(diags) != 1 || diags[0].Message != "TASK.md must start with a metadata block." {
+		t.Fatalf("metadata start diagnostic=%v", diags)
+	}
+	if _, _, _, diags := SplitMetadata([]byte("---\npriority: 1\n")); len(diags) != 1 || diags[0].Message != "The metadata block is not terminated by ---." {
+		t.Fatalf("metadata termination diagnostic=%v", diags)
+	}
+
 	// Duplicate key.
 	fm, _, _, sd := SplitMetadata([]byte("---\na: 1\na: 2\n---\n"))
 	if len(sd) != 0 {

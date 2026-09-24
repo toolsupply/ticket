@@ -21,6 +21,9 @@ func Delete(st *store.Store, ref string) (*DeleteResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := EnsureActive(st, full); err != nil {
+		return nil, err
+	}
 	if err := st.DeleteTicket(full); err != nil {
 		return nil, err
 	}
@@ -45,6 +48,9 @@ func DeleteMany(st *store.Store, refs []string) (*BatchDeleteResult, error) {
 	sort.Strings(resolved)
 	result := &BatchDeleteResult{Items: make([]DeleteResult, 0, len(resolved))}
 	for _, id := range resolved {
+		if err := EnsureActive(st, id); err != nil {
+			return nil, err
+		}
 		if err := st.DeleteTicket(id); err != nil {
 			return nil, err
 		}

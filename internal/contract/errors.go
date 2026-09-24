@@ -2,7 +2,7 @@
 package contract
 
 // ErrorCode is the stable, machine-readable discriminator for failures.
-// It is part of the v1 API and must not be renamed without an API version
+// It is part of the API 2 contract and must not be renamed without an API version
 // change.
 type ErrorCode string
 
@@ -24,6 +24,7 @@ const (
 	ErrAlreadyClaimed       ErrorCode = "already_claimed"
 	ErrConflict             ErrorCode = "conflict"
 	ErrInvalidTransition    ErrorCode = "invalid_transition"
+	ErrArchived             ErrorCode = "archived"
 	ErrDependencyUnresolved ErrorCode = "dependency_unresolved"
 	ErrLockTimeout          ErrorCode = "lock_timeout"
 
@@ -32,6 +33,7 @@ const (
 	ErrInvalidTicket     ErrorCode = "invalid_ticket"
 	ErrDependencyCycle   ErrorCode = "dependency_cycle"
 	ErrParentCycle       ErrorCode = "parent_cycle"
+	ErrReadinessCycle    ErrorCode = "readiness_cycle"
 	ErrDanglingReference ErrorCode = "dangling_reference"
 
 	// Class: storage/runtime failure (exit 6).
@@ -56,6 +58,7 @@ var exitCodes = map[ErrorCode]int{
 	ErrAlreadyClaimed:       4,
 	ErrConflict:             4,
 	ErrInvalidTransition:    4,
+	ErrArchived:             4,
 	ErrDependencyUnresolved: 4,
 	ErrLockTimeout:          4,
 
@@ -63,6 +66,7 @@ var exitCodes = map[ErrorCode]int{
 	ErrInvalidTicket:     5,
 	ErrDependencyCycle:   5,
 	ErrParentCycle:       5,
+	ErrReadinessCycle:    5,
 	ErrDanglingReference: 5,
 
 	ErrIOError:               6,

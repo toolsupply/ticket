@@ -14,7 +14,7 @@ const (
 )
 
 func cmdWait(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

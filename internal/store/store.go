@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,6 +65,10 @@ func Open(cwd string, o OpenOptions) (*Store, error) {
 		return nil, err
 	}
 	if err := ensureLocalRoot(rootHandle); err != nil {
+		rootHandle.Close()
+		return nil, err
+	}
+	if err := validateArchiveRoot(rootHandle); err != nil {
 		rootHandle.Close()
 		return nil, err
 	}
@@ -151,40 +156,11 @@ func (st *Store) RevalidateAfterSync() error {
 	if err != nil {
 		return err
 	}
+	if err := validateArchiveRoot(st.root); err != nil {
+		return err
+	}
 	st.Cfg = cfg
 	return nil
-}
-
-func validateLiveLocal(root string) (os.FileInfo, error) {
-	localPath := filepath.Join(root, ".local")
-	info, err := os.Lstat(localPath)
-	if os.IsNotExist(err) {
-		return nil, contract.NewError(contract.ErrInvalidRepository,
-			".local disappeared during SCM synchronization; refusing to continue.", nil)
-	}
-	if err != nil {
-		return nil, contract.NewError(contract.ErrIOError,
-			"Cannot inspect .local after SCM synchronization: "+err.Error(), nil)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, contract.NewError(contract.ErrInvalidRepository,
-			".local must remain a real directory after SCM synchronization.", nil)
-	}
-	lockPath := filepath.Join(localPath, "lock")
-	lockInfo, err := os.Lstat(lockPath)
-	if os.IsNotExist(err) {
-		return nil, contract.NewError(contract.ErrInvalidRepository,
-			".local/lock disappeared during SCM synchronization; refusing to continue.", nil)
-	}
-	if err != nil {
-		return nil, contract.NewError(contract.ErrIOError,
-			"Cannot inspect .local/lock after SCM synchronization: "+err.Error(), nil)
-	}
-	if lockInfo.Mode()&os.ModeSymlink != 0 || !lockInfo.Mode().IsRegular() {
-		return nil, contract.NewError(contract.ErrInvalidRepository,
-			".local/lock must remain a regular file after SCM synchronization.", nil)
-	}
-	return lockInfo, nil
 }
 
 func validateLiveLocalRoot(root *os.Root) (os.FileInfo, error) {
@@ -228,19 +204,19 @@ func (st *Store) NewID(prefix string) (string, error) {
 }
 
 func (st *Store) taskPath(id string) (string, error) {
-	if _, _, ok := ParseID(id); !ok {
-		return "", contract.NewError(contract.ErrInvalidArgument,
-			"Reference is not a valid ticket ID.", map[string]any{"id": id})
+	name, err := st.taskName(id)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(st.Root, id, "TASK.md"), nil
+	return filepath.Join(st.Root, name), nil
 }
 
 func (st *Store) taskName(id string) (string, error) {
-	if _, _, ok := ParseID(id); !ok {
-		return "", contract.NewError(contract.ErrInvalidArgument,
-			"Reference is not a valid ticket ID.", map[string]any{"id": id})
+	name, err := st.TaskRelPath(id)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(id, "TASK.md"), nil
+	return filepath.FromSlash(name), nil
 }
 
 // ReadTask validates and reads a managed TASK.md through Store's stable root.
@@ -299,6 +275,10 @@ func (st *Store) RootEntries() ([]fs.DirEntry, error) {
 }
 
 func (st *Store) TicketDirInfo(id string) (os.FileInfo, error) {
+	name, err := st.TicketDirRelPath(id)
+	if err != nil {
+		return nil, err
+	}
 	r, ephemeral, err := st.openRoot()
 	if err != nil {
 		return nil, wrapIO("ticket repository", err)
@@ -306,7 +286,7 @@ func (st *Store) TicketDirInfo(id string) (os.FileInfo, error) {
 	if ephemeral {
 		defer r.Close()
 	}
-	return r.Lstat(id)
+	return r.Lstat(filepath.FromSlash(name))
 }
 
 // TicketExists reports whether a canonical ticket directory already occupies
@@ -317,21 +297,15 @@ func (st *Store) TicketExists(id string) (bool, error) {
 		return false, contract.NewError(contract.ErrInvalidArgument,
 			"Reference is not a valid ticket ID.", map[string]any{"id": id})
 	}
-	r, ephemeral, err := st.openRoot()
-	if err != nil {
-		return false, wrapIO("ticket repository", err)
-	}
-	if ephemeral {
-		defer r.Close()
-	}
-	_, err = r.Lstat(id)
+	_, err := st.TicketLocation(id)
 	if err == nil {
 		return true, nil
 	}
-	if os.IsNotExist(err) {
+	var ce *contract.Error
+	if errors.As(err, &ce) && ce.Code == contract.ErrNotFound {
 		return false, nil
 	}
-	return false, contract.NewError(contract.ErrIOError, "Ticket lookup failed: "+err.Error(), map[string]any{"id": id})
+	return false, err
 }
 
 // DeleteTicket removes one canonical ticket directory. The final path is
@@ -342,6 +316,14 @@ func (st *Store) DeleteTicket(id string) error {
 	if _, _, ok := ParseID(id); !ok {
 		return contract.NewError(contract.ErrInvalidArgument,
 			"Reference is not a valid ticket ID.", map[string]any{"id": id})
+	}
+	loc, err := st.TicketLocation(id)
+	if err != nil {
+		return err
+	}
+	if loc.Archived() {
+		return contract.NewError(contract.ErrArchived,
+			"Archived tickets are read-only; unarchive the ticket before deleting it.", map[string]any{"id": id})
 	}
 	if st.root == nil {
 		return st.deleteTicketPath(id)
@@ -683,29 +665,21 @@ func (st *Store) ResolveID(id string, requireExists bool) (string, error) {
 			"Reference is not a valid ticket ID.", map[string]any{"id": id})
 	}
 	if requireExists {
-		r, ephemeral, err := st.openRoot()
-		if err != nil {
-			return "", wrapIO("ticket repository", err)
-		}
-		if ephemeral {
-			defer r.Close()
-		}
-		le, err := r.Lstat(id)
-		if err != nil || !le.IsDir() {
-			return "", dangling(id)
+		if _, err := st.TicketLocation(id); err != nil {
+			var ce *contract.Error
+			if errors.As(err, &ce) && ce.Code == contract.ErrNotFound {
+				return "", dangling(id)
+			}
+			return "", err
 		}
 	} else {
-		r, ephemeral, err := st.openRoot()
-		if err != nil {
-			return "", wrapIO("ticket repository", err)
-		}
-		if ephemeral {
-			defer r.Close()
-		}
-		le, err := r.Lstat(id)
-		if err != nil || !le.IsDir() {
-			return "", contract.NewError(contract.ErrNotFound,
-				"Ticket not found.", map[string]any{"id": id})
+		if _, err := st.TicketLocation(id); err != nil {
+			var ce *contract.Error
+			if errors.As(err, &ce) && ce.Code == contract.ErrNotFound {
+				return "", contract.NewError(contract.ErrNotFound,
+					"Ticket not found.", map[string]any{"id": id})
+			}
+			return "", err
 		}
 	}
 	return id, nil
@@ -758,6 +732,9 @@ func (st *Store) listTicketDirs() ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
+		if e.Name() == ArchiveDirName {
+			continue
+		}
 		if e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
@@ -769,5 +746,29 @@ func (st *Store) listTicketDirs() ([]string, error) {
 		}
 		out = append(out, e.Name())
 	}
+	archiveEntries, err := st.ArchiveEntries()
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range archiveEntries {
+		if e.Type()&os.ModeSymlink != 0 || !e.IsDir() || !identity.ValidID(e.Name()) {
+			continue
+		}
+		if containsString(out, e.Name()) {
+			return nil, contract.NewError(contract.ErrInvalidRepository,
+				"Ticket ID exists in both active and archive namespaces.", map[string]any{"id": e.Name()})
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
 	return out, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }

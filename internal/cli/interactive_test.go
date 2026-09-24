@@ -122,6 +122,29 @@ func TestInteractiveEditClaimsUnassignedTicketBeforeEditor(t *testing.T) {
 	if code := <-result; code != 0 {
 		t.Fatalf("edit after automatic claim failed: exit=%d", code)
 	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if view["assignee"] != nil {
+		t.Fatalf("temporary editor claim was retained: %v", view)
+	}
+}
+
+func TestInteractiveEditReleasesTemporaryReviewClaim(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Review edit", "Edit the review ticket."))["id"].(string)
+	mustCLI(t, "submit", id)
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-append")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TEST_EDITOR_BODY", "\n## Handoff\nEdited during review.\n")
+	t.Setenv("TICKET_ACTOR", "reviewer")
+	if out, code := runCLIHuman(t, "edit", id); code != 0 || !strings.Contains(out, "edited "+id) {
+		t.Fatalf("review edit: exit=%d out=%q", code, out)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if view["assignee"] != nil || !strings.Contains(view["body"].(string), "Edited during review.") {
+		t.Fatalf("review edit ownership or body: %v", view)
+	}
 }
 
 func TestInteractiveEditPreservesUnassignedNonClaimableStates(t *testing.T) {
@@ -194,7 +217,7 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	}
 	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
 	body := view["body"].(string)
-	if !strings.Contains(body, "Concurrent live change.") || strings.Contains(body, "Edited draft.") {
+	if view["assignee"] != nil || !strings.Contains(body, "Concurrent live change.") || strings.Contains(body, "Edited draft.") {
 		t.Fatalf("concurrent edit overwrote live content: %q", body)
 	}
 }
@@ -288,7 +311,7 @@ func TestInteractiveEditAllowsAssignedActor(t *testing.T) {
 		t.Fatalf("assigned-owner edit: exit=%d out=%q", code, out)
 	}
 	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
-	if !strings.Contains(view["body"].(string), "Edited by owner.") {
+	if view["assignee"] != "worker" || !strings.Contains(view["body"].(string), "Edited by owner.") {
 		t.Fatalf("assigned-owner edit was not published: %v", view)
 	}
 }
@@ -332,8 +355,27 @@ func TestInteractiveNewIsInvisibleUntilPublication(t *testing.T) {
 	}
 	listed, err = domain.List(st, domain.ListOptions{State: "all", Limit: 100})
 	st.Close()
-	if err != nil || len(listed.Items) != 1 || listed.Items[0].Title == nil || *listed.Items[0].Title != "Hidden ticket" {
+	if err != nil || len(listed.Items) != 1 || listed.Items[0].Title == nil || *listed.Items[0].Title != "Hidden ticket" || listed.Items[0].Assignee != nil {
 		t.Fatalf("published new ticket: err=%v items=%+v", err, listed.Items)
+	}
+}
+
+func TestInteractiveEditReleasesClaimAfterDraftValidationFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Invalid edit", "Keep the live ticket safe."))["id"].(string)
+	editor := installTestHelper(t, filepath.Join(dir, "editor-helper"), "editor-write")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("TICKET_ACTOR", "worker")
+	t.Setenv("TEST_EDITOR_BODY", "---\nstate: open\npriority: 2\n---\n# Broken title\n\n# Accidental heading\n\n## Objective\n\nIncomplete.\n")
+	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}, session: &sessionState{}}
+	if err := editWithEditor(ctx, id); err == nil {
+		t.Fatal("invalid editor draft unexpectedly succeeded")
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if view["assignee"] != nil {
+		t.Fatalf("temporary editor claim was retained after validation failure: %v", view)
 	}
 }
 
@@ -353,7 +395,7 @@ func TestInteractiveEditorFailurePreservesDraftAndLiveTicket(t *testing.T) {
 	}
 	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
 	body := view["body"].(string)
-	if strings.Contains(body, "Partial draft.") || !strings.Contains(body, "Keep the live ticket safe.") {
+	if view["assignee"] != nil || strings.Contains(body, "Partial draft.") || !strings.Contains(body, "Keep the live ticket safe.") {
 		t.Fatalf("editor failure changed live ticket: %q", body)
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "tickets", ".local"))

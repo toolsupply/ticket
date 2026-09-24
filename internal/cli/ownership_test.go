@@ -68,6 +68,58 @@ func TestLeanReleaseHandoffInputPresence(t *testing.T) {
 	_ = claim
 }
 
+func TestReassignPreservesStateAndOwnershipAtomically(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+
+	created := runCLIStdinMust(t, `{"title":"reassign open","sections":{"objective":"work","acceptance":"done"}}`, "create", "--input", "-")
+	id := exactlyOneJSONObject(t, created)["id"].(string)
+	mustCLI(t, "claim", id, "--actor", "coder")
+	if out, code := runCLI(t, "reassign", id, "user", "--actor", "other"); code == 0 || !strings.Contains(out, "already_claimed") {
+		t.Fatalf("other actor reassign: exit=%d %q", code, out)
+	}
+	reassigned := exactlyOneJSONObject(t, mustCLI(t, "reassign", id, "user", "--handoff", "continue", "-m", "transferred", "--actor", "coder"))
+	if reassigned["changed"] != true || reassigned["state"] != "open" || reassigned["from_assignee"] != "coder" || reassigned["assignee"] != "user" {
+		t.Fatalf("open reassignment: %v", reassigned)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if view["state"] != "open" || view["assignee"] != "user" || !strings.Contains(view["body"].(string), "continue") || !strings.Contains(view["body"].(string), "transferred") {
+		t.Fatalf("open reassignment lost state or context: %v", view)
+	}
+	next := exactlyOneJSONObject(t, mustCLI(t, "next", "--claim", "--actor", "coder"))
+	if next["item"] != nil {
+		t.Fatalf("assigned ticket became selectable for another actor: %v", next)
+	}
+
+	created = runCLIStdinMust(t, `{"title":"reassign review","sections":{"objective":"work","acceptance":"done"}}`, "create", "--input", "-")
+	reviewID := exactlyOneJSONObject(t, created)["id"].(string)
+	mustCLI(t, "claim", reviewID, "--actor", "coder")
+	mustCLI(t, "submit", reviewID, "--actor", "coder")
+	mustCLI(t, "claim", reviewID, "--actor", "reviewer")
+	reviewed := exactlyOneJSONObject(t, mustCLI(t, "reassign", reviewID, "user", "--actor", "reviewer"))
+	if reviewed["state"] != "review" || reviewed["assignee"] != "user" {
+		t.Fatalf("review reassignment changed lifecycle: %v", reviewed)
+	}
+}
+
+func TestReassignJSONInput(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	created := runCLIStdinMust(t, `{"title":"reassign json","sections":{"objective":"work","acceptance":"done"}}`, "create", "--input", "-")
+	id := exactlyOneJSONObject(t, created)["id"].(string)
+	mustCLI(t, "claim", id, "--actor", "coder")
+	result := exactlyOneJSONObject(t, runCLIStdinMust(t, `{"assignee":"reviewer","handoff":"json handoff","message":"json transfer"}`, "reassign", id, "--input", "-", "--actor", "coder"))
+	if result["assignee"] != "reviewer" || result["handoff"] != "json handoff" || result["message"] != "json transfer" {
+		t.Fatalf("JSON reassignment result: %v", result)
+	}
+	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
+	if view["assignee"] != "reviewer" || !strings.Contains(view["body"].(string), "json handoff") || !strings.Contains(view["body"].(string), "json transfer") {
+		t.Fatalf("JSON reassignment did not persist: %v", view)
+	}
+}
+
 func mustCLI(t *testing.T, args ...string) string {
 	t.Helper()
 	out, code := runCLI(t, args...)

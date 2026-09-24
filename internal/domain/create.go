@@ -26,6 +26,7 @@ type CreateOptions struct {
 type CreateResult struct {
 	ID        string `json:"id"`
 	Path      string `json:"path"`
+	Title     string `json:"-"`
 	Changed   bool   `json:"changed"`
 	State     string `json:"-"`
 	Priority  int    `json:"-"`
@@ -124,7 +125,8 @@ func Create(st *store.Store, opts CreateOptions) (*CreateResult, error) {
 		err = st.PublishTicket(id, data, TaskMaxBytes)
 		if err == nil {
 			return &CreateResult{ID: id, Path: id + "/TASK.md", Changed: true,
-				State: parsed.State, Priority: parsed.Priority, Objective: objectivePreview(parsed)}, nil
+				Title: parsed.Title, State: parsed.State, Priority: parsed.Priority,
+				Objective: objectivePreview(parsed)}, nil
 		}
 		if !errors.Is(err, store.ErrTargetExists) {
 			return nil, err

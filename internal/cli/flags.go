@@ -1,13 +1,16 @@
-// Flag parsing with the v1 invocation rules: long command options plus the
+// Flag parsing with the API 2 invocation rules: long command options plus the
 // conventional -h and -j aliases, `--` ends option parsing, unknown flags
 // and duplicate scalar flags are errors.
 package cli
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/toolsupply/ticket/internal/contract"
 )
+
+var errParserMetadata = errors.New("parser metadata")
 
 type flagKind int
 
@@ -16,20 +19,23 @@ const (
 	kindInt
 	kindBool
 	kindRepeat
+	kindTail
 )
 
 type flagDef struct {
 	kind flagKind
 	set  func(value string) error
+	tail func(values []string) error
 	used *bool
 }
 
 type parser struct {
-	defs        map[string]*flagDef
-	aliases     map[string]string
-	positionals []string
-	help        *bool
-	helpSeen    *bool
+	defs         map[string]*flagDef
+	aliases      map[string]string
+	positionals  []string
+	help         *bool
+	helpSeen     *bool
+	metadataOnly bool
 }
 
 // flag registers one command-specific option.
@@ -82,7 +88,31 @@ func (p *parser) repeat(name string, dst *[]string) {
 	p.flag(name, kindRepeat, func(v string) error { *dst = append(*dst, v); return nil }, true)
 }
 
+// tail registers an option whose presence makes every remaining argv token
+// belong to the option value. It is used by parser-aware multi-token options
+// such as -q/--query; unlike a normal string option it never consumes only
+// the next token and never resumes option parsing.
+func (p *parser) tail(name string, dst *[]string, presence ...*bool) {
+	if p.defs == nil {
+		p.defs = map[string]*flagDef{}
+	}
+	p.defs[name] = &flagDef{
+		kind: kindTail,
+		tail: func(values []string) error {
+			if len(presence) > 0 && presence[0] != nil {
+				*presence[0] = true
+			}
+			*dst = append(*dst, values...)
+			return nil
+		},
+		used: new(bool),
+	}
+}
+
 func (p *parser) parse(args []string) error {
+	if p.metadataOnly {
+		return errParserMetadata
+	}
 	i := 0
 	restArePositionals := false
 	for i < len(args) {
@@ -124,6 +154,16 @@ func (p *parser) parse(args []string) error {
 			}
 			def := p.defs[name]
 			i++
+			if def.kind == kindTail {
+				if *def.used {
+					return duplicateFlag(name)
+				}
+				*def.used = true
+				if err := def.tail(args[i:]); err != nil {
+					return err
+				}
+				return nil
+			}
 			if def.kind == kindBool {
 				if *def.used {
 					return duplicateFlag(name)
@@ -171,6 +211,20 @@ func (p *parser) parse(args []string) error {
 				return contract.NewError(contract.ErrInvalidArgument,
 					"Unknown flag --"+name+".", map[string]any{"flag": "--" + name})
 			}
+			if def.kind == kindTail {
+				if hasValue {
+					return contract.NewError(contract.ErrInvalidArgument,
+						"Flag --"+name+" does not accept an inline value.", map[string]any{"flag": "--" + name})
+				}
+				if *def.used {
+					return duplicateFlag(name)
+				}
+				*def.used = true
+				if err := def.tail(args[i+1:]); err != nil {
+					return err
+				}
+				return nil
+			}
 			if def.kind == kindBool {
 				if hasValue {
 					v, err := strconv.ParseBool(value)
@@ -204,13 +258,6 @@ func (p *parser) parse(args []string) error {
 		i++
 	}
 	return nil
-}
-
-func (p *parser) requirePositional(n int, what string) (string, error) {
-	if len(p.positionals) < n {
-		return "", contract.NewError(contract.ErrInvalidArgument, what+" requires an argument.", nil)
-	}
-	return p.positionals[n-1], nil
 }
 
 func (p *parser) requireNoPositionals(what string) error {

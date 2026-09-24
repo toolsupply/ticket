@@ -3,15 +3,10 @@ package cli
 import (
 	"os"
 	"strings"
-)
 
-// mergeEnvironmentTags adds comma-separated defaults to explicit tags while
-// preserving the tag validator's handling of invalid values. Empty entries
-// remain in the result so malformed environment values are rejected by the
-// domain layer rather than silently ignored.
-func mergeEnvironmentTags(name string, explicit []string) []string {
-	return mergeTagValues(environmentTags(name), explicit)
-}
+	"github.com/toolsupply/ticket/internal/contract"
+	"github.com/toolsupply/ticket/internal/domain"
+)
 
 func environmentTags(name string) []string {
 	var values []string
@@ -39,4 +34,36 @@ func mergeTagValues(groups ...[]string) []string {
 		merged = append(merged, tag)
 	}
 	return merged
+}
+
+// extractTrailingTitleTags recognizes the human-only title shorthand. It
+// leaves a title untouched unless the final whitespace-delimited tokens are
+// all valid hashtag forms, so interior hash text remains ordinary title text.
+func extractTrailingTitleTags(title string) (string, []string, error) {
+	words := strings.Fields(title)
+	start := len(words)
+	var extracted []string
+	for start > 0 {
+		word := words[start-1]
+		if !strings.HasPrefix(word, "#") || len(word) == 1 {
+			break
+		}
+		tag := word[1:]
+		if _, err := domain.NormalizeTags([]string{tag}); err != nil {
+			break
+		}
+		extracted = append(extracted, tag)
+		start--
+	}
+	if len(extracted) == 0 {
+		return title, nil, nil
+	}
+	if start == 0 {
+		return "", nil, contract.NewError(contract.ErrInvalidArgument,
+			"Title must contain text before trailing #tags.", nil)
+	}
+	for left, right := 0, len(extracted)-1; left < right; left, right = left+1, right-1 {
+		extracted[left], extracted[right] = extracted[right], extracted[left]
+	}
+	return strings.Join(words[:start], " "), extracted, nil
 }

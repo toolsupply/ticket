@@ -21,16 +21,16 @@ func TestCloseAndOpenLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if !closed.Changed || closed.State != "completed" || closed.ID != id {
+	if !closed.Changed || closed.State != "closed" || closed.ID != id {
 		t.Fatalf("close result: %+v", closed)
 	}
 	ticket, err := ReadTicket(e.st, id)
-	if err != nil || ticket.State != "completed" || ticket.Assignee != "" || ticket.SectionText("outcome") != "Shipped." {
+	if err != nil || ticket.State != "closed" || ticket.Assignee != "" || ticket.SectionText("outcome") != "Shipped." {
 		t.Fatalf("completed ticket: %+v (%v)", ticket, err)
 	}
 	completedBytes, _ := os.ReadFile(path)
 	noop, err := Close(e.st, id, CloseOptions{Outcome: "ignored"})
-	if err != nil || noop.Changed || noop.State != "completed" {
+	if err != nil || noop.Changed || noop.State != "closed" {
 		t.Fatalf("completed close: %+v (%v)", noop, err)
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, completedBytes) {
@@ -58,7 +58,7 @@ func TestRejectRequiresOutcomeAndCloseIgnoresOpenChildren(t *testing.T) {
 		t.Fatalf("missing reject outcome: %v", err)
 	}
 	closed, err := Close(e.st, parent, CloseOptions{Outcome: "done"})
-	if err != nil || !closed.Changed || closed.State != "completed" {
+	if err != nil || !closed.Changed || closed.State != "closed" {
 		t.Fatalf("close with open child: %+v (%v)", closed, err)
 	}
 	if got, _ := os.ReadFile(path); len(got) == 0 {
@@ -103,11 +103,11 @@ func TestCloseIgnoresDependenciesAndClearsOwnership(t *testing.T) {
 	id := e.create(t, "dependent", CreateOptions{DependsOn: []string{dep}, Sections: map[string]string{"objective": "x", "acceptance": "x"}})
 	insertTaskFMLine(t, e.base, id, "assignee: alice\n")
 	closed, err := Close(e.st, id, CloseOptions{Outcome: "done"})
-	if err != nil || !closed.Changed || closed.State != "completed" {
+	if err != nil || !closed.Changed || closed.State != "closed" {
 		t.Fatalf("close dependent: %+v (%v)", closed, err)
 	}
 	ticket, err := ReadTicket(e.st, id)
-	if err != nil || ticket.State != "completed" || ticket.Assignee != "" {
+	if err != nil || ticket.State != "closed" || ticket.Assignee != "" {
 		t.Fatalf("closed dependent: %+v (%v)", ticket, err)
 	}
 }
@@ -126,12 +126,12 @@ func TestCloseManyTargetsAndAll(t *testing.T) {
 	}
 	for _, id := range []string{first, second} {
 		ticket, err := ReadTicket(e.st, id)
-		if err != nil || ticket.State != "completed" {
+		if err != nil || ticket.State != "closed" {
 			t.Fatalf("closed %s: %+v (%v)", id, ticket, err)
 		}
 	}
 	all, err := CloseAll(e.st, CloseOptions{Outcome: "finished"})
-	if err != nil || len(all.Items) != 1 || all.Items[0].ID != third || all.Items[0].State != "completed" {
+	if err != nil || len(all.Items) != 1 || all.Items[0].ID != third || all.Items[0].State != "closed" {
 		t.Fatalf("close all: %+v (%v)", all, err)
 	}
 }

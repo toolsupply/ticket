@@ -12,6 +12,7 @@ import (
 
 	"github.com/toolsupply/ticket/internal/contract"
 	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/scm"
 )
 
 // createWithEditor keeps the draft outside the managed ticket collection
@@ -65,13 +66,17 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 
 // editWithEditor snapshots an existing ticket under the lock, releases it for
 // all editor interaction, and publishes only after an optimistic byte check.
-func editWithEditor(ctx *commandContext, ref string) error {
+func editWithEditor(ctx *commandContext, ref string) (retErr error) {
 	st, backend, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
 		return err
 	}
 	full, err := resolveTicketRef(st, ctx, ref, "edit")
 	if err != nil {
+		st.Close()
+		return err
+	}
+	if err := domain.EnsureActive(st, full); err != nil {
 		st.Close()
 		return err
 	}
@@ -93,6 +98,20 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		}
 		shouldClaim = readiness.Ready
 	}
+	temporaryClaim := false
+	temporaryActor := ""
+	defer func() {
+		if !temporaryClaim {
+			return
+		}
+		if cleanupErr := releaseTemporaryEditClaim(ctx, full, temporaryActor, backend); cleanupErr != nil {
+			if retErr == nil {
+				retErr = cleanupErr
+				return
+			}
+			retErr = editCleanupError(retErr, cleanupErr)
+		}
+	}()
 	if shouldClaim {
 		claim, err := domain.Claim(st, full, domain.ClaimOptions{Actor: actor})
 		if err != nil {
@@ -100,14 +119,18 @@ func editWithEditor(ctx *commandContext, ref string) error {
 			return err
 		}
 		if claim.Changed {
+			temporaryClaim = true
+			temporaryActor = actor
 			if err := persistMutation(backend, st, "claim", claim); err != nil {
 				st.Close()
+				st = nil
 				return err
 			}
 		}
 		beforeTicket, err = domain.ReadTicket(st, full)
 		if err != nil {
 			st.Close()
+			st = nil
 			return err
 		}
 	} else if beforeTicket.Assignee != "" && beforeTicket.Assignee != actor {
@@ -116,6 +139,7 @@ func editWithEditor(ctx *commandContext, ref string) error {
 	original := append([]byte(nil), beforeTicket.FileBytes...)
 	draftPath, err := createDraft(st.Root, original)
 	st.Close()
+	st = nil
 	if err != nil {
 		return err
 	}
@@ -125,11 +149,17 @@ func editWithEditor(ctx *commandContext, ref string) error {
 		return err
 	}
 
-	st, backend, err = openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
+	nextST, nextBackend, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
 		return preserveDraftError(err, draftPath)
 	}
-	defer st.Close()
+	st, backend = nextST, nextBackend
+	defer func() {
+		if st != nil {
+			st.Close()
+			st = nil
+		}
+	}()
 	current, err := domain.ReadTicket(st, full)
 	if err != nil {
 		return preserveDraftError(err, draftPath)
@@ -150,6 +180,50 @@ func editWithEditor(ctx *commandContext, ref string) error {
 	_ = os.Remove(draftPath)
 	rememberCurrentTicket(ctx, st, res)
 	return renderHumanTo(ctx.stdout, "edit", res, false, ctx.decorator())
+}
+
+// releaseTemporaryEditClaim restores the ownership state that an editor
+// session temporarily changed. The live ticket is checked while holding a
+// fresh repository lock so a legitimate ownership change is never clobbered.
+func releaseTemporaryEditClaim(ctx *commandContext, id, actor string, backend scm.Backend) error {
+	st, err := ctx.globalOpts.openStore(ctx.cwd)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ticket, err := domain.ReadTicket(st, id)
+	if err != nil {
+		return err
+	}
+	if ticket.Assignee != actor || (ticket.State != "open" && ticket.State != "review") {
+		return nil
+	}
+	result, err := domain.Release(st, id, domain.ReleaseOptions{Actor: actor})
+	if err != nil {
+		return err
+	}
+	if !result.Changed {
+		return nil
+	}
+	if err := persistMutation(backend, st, "release", result); err != nil {
+		return err
+	}
+	_ = st.SignalChange()
+	return nil
+}
+
+func editCleanupError(primary, cleanup error) error {
+	var ce *contract.Error
+	if !errors.As(primary, &ce) {
+		return fmt.Errorf("%v; temporary editor claim cleanup failed: %w", primary, cleanup)
+	}
+	details := map[string]any{}
+	for key, value := range ce.Details {
+		details[key] = value
+	}
+	details["temporary_claim_cleanup"] = cleanup.Error()
+	return contract.NewError(ce.Code,
+		ce.Message+" Temporary editor claim cleanup failed: "+cleanup.Error(), details)
 }
 
 func warnEditOwnership(ticket *domain.Ticket, actor string) {

@@ -1,5 +1,5 @@
 // Package identity holds the ticket identifier primitives shared by the
-// production code. v1 ticket IDs are date-stamped and safe as directory
+// production code. Ticket IDs are date-stamped and safe as directory
 // names: YYYYMMDD-NNNNN.
 package identity
 
@@ -13,7 +13,7 @@ import (
 // TimestampIDLen is the ASCII length of a full ticket ID.
 const TimestampIDLen = 8 + 1 + 5
 
-// IDSource produces a full ID for the supplied entity prefix. The v1 ticket
+// IDSource produces a full ID for the supplied entity prefix. The ticket
 // source uses an empty prefix; the parameter remains for the store interface.
 type IDSource interface {
 	ID(prefix string) (string, error)
@@ -41,7 +41,7 @@ func (RandomSource) ID(prefix string) (string, error) {
 	return fmt.Sprintf("%s-%05d", now.Format("20060102"), suffix), nil
 }
 
-// ValidID reports whether id uses the canonical v1 date-stamped format.
+// ValidID reports whether id uses the canonical date-stamped format.
 func ValidID(id string) bool {
 	_, body, ok := PrefixOf(id)
 	if !ok || len(body) != TimestampIDLen || body[8] != '-' {

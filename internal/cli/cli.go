@@ -1,6 +1,6 @@
 // Package cli implements process invocation: argument decoding, the JSON
 // output envelope, and exit-code mapping. Domain and storage layers live in
-// separate packages; the CLI only maps their typed results to the v1
+// separate packages; the CLI only maps their typed results to the API 2
 // interface contract.
 package cli
 
@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	"github.com/toolsupply/ticket/internal/contract"
@@ -163,14 +164,10 @@ func dispatch(args []string, stdout *bytes.Buffer) (err error) {
 }
 
 // dispatchWithInput executes one command with an invocation-local input
-// stream. A nil input means that the invocation has no stdin payload; a
+// stream. A nil input means that the invocation has no input payload; a
 // non-nil reader is the only source available to commands that consume input.
 func dispatchWithInput(args []string, stdout *bytes.Buffer, input io.Reader) (err error) {
 	return dispatchWithSessionInput(args, stdout, nil, input, false)
-}
-
-func dispatchWithSession(args []string, stdout *bytes.Buffer, executor *sessionExecutor) (err error) {
-	return dispatchWithSessionInput(args, stdout, executor, nil, false)
 }
 
 func dispatchWithSessionInput(args []string, stdout *bytes.Buffer, executor *sessionExecutor, input io.Reader, inputProvided bool) (err error) {
@@ -262,8 +259,6 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 		}
 		g.json = true
 		return dispatchWithGlobals(rest, stdout, g, executor, input, inputProvided)
-	case "-la", "-al":
-		return cmdList(ctx, append([]string{"-l", "-a"}, rest...), true)
 	case "version":
 		return cmdVersion(ctx, rest)
 	case "actor":
@@ -279,12 +274,20 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 		return cmdCreate(ctx, rest)
 	case "delete":
 		return cmdDelete(ctx, rest)
+	case "archive":
+		return cmdArchive(ctx, rest)
+	case "unarchive":
+		return cmdUnarchive(ctx, rest)
 	case "bump":
 		return cmdBump(ctx, rest)
 	case "list":
-		return cmdList(ctx, rest, rawName == "ls")
+		return cmdList(ctx, rest)
+	case "query":
+		return cmdQuery(ctx, rest)
 	case "grep":
 		return cmdGrep(ctx, rest)
+	case "graph":
+		return cmdGraph(ctx, rest)
 	case "ready":
 		return cmdReady(ctx, rest)
 	case "next":
@@ -313,10 +316,14 @@ func dispatchWithGlobals(args []string, stdout *bytes.Buffer, g globalOpts, exec
 		return cmdPath(ctx, rest)
 	case "update":
 		return cmdUpdate(ctx, rest)
+	case "append":
+		return cmdAppend(ctx, rest)
 	case "claim":
 		return cmdClaim(ctx, rest)
 	case "release":
 		return cmdRelease(ctx, rest)
+	case "reassign":
+		return cmdReassign(ctx, rest)
 	case "close":
 		return cmdClose(ctx, rest, "close", func(st *store.Store, id string, in transitionInput, actor string) (any, error) {
 			return domain.Close(st, id, domain.CloseOptions{Outcome: valueOrEmpty(in.Outcome), Actor: actor, Message: in.Message})
@@ -343,9 +350,107 @@ func commandAcceptsInvocationInput(name string) bool {
 	return ok && command.acceptsInvocationInput
 }
 
+// parserForCommand returns the definitions registered by the command's real
+// parser. Metadata probing stops at parser.parse, before command behavior can
+// inspect input or mutate repository state.
+func parserForCommand(name string) *parser {
+	ctx := &commandContext{
+		stdout:       new(bytes.Buffer),
+		metadataOnly: true,
+	}
+	name = canonicalCommand(name)
+	if name == "" {
+		p := ctx.newParser()
+		ctx.registerWithoutActor(p)
+		return p
+	}
+	var err error
+	switch name {
+	case "version":
+		err = cmdVersion(ctx, nil)
+	case "actor":
+		err = cmdActor(ctx, nil)
+	case "info":
+		err = cmdInfo(ctx, nil)
+	case "init":
+		err = cmdInit(ctx, nil)
+	case "create":
+		err = cmdCreate(ctx, nil)
+	case "delete":
+		err = cmdDelete(ctx, nil)
+	case "archive":
+		err = cmdArchive(ctx, nil)
+	case "unarchive":
+		err = cmdUnarchive(ctx, nil)
+	case "bump":
+		err = cmdBump(ctx, nil)
+	case "list":
+		err = cmdList(ctx, nil)
+	case "query":
+		err = cmdQuery(ctx, nil)
+	case "grep":
+		err = cmdGrep(ctx, nil)
+	case "graph":
+		err = cmdGraph(ctx, nil)
+	case "ready":
+		err = cmdReady(ctx, nil)
+	case "next":
+		err = cmdNext(ctx, nil)
+	case "wait":
+		err = cmdWait(ctx, nil)
+	case "watch":
+		err = cmdWatch(ctx, nil)
+	case "show":
+		err = cmdShow(ctx, nil)
+	case "edit":
+		err = cmdEdit(ctx, nil)
+	case "submit":
+		err = cmdSubmit(ctx, nil)
+	case "hold":
+		err = cmdHold(ctx, nil)
+	case "open":
+		err = cmdOpen(ctx, nil)
+	case "review":
+		err = cmdReview(ctx, nil)
+	case "state":
+		err = cmdState(ctx, nil)
+	case "status":
+		err = cmdStatus(ctx, nil)
+	case "path":
+		err = cmdPath(ctx, nil)
+	case "update":
+		err = cmdUpdate(ctx, nil)
+	case "append":
+		err = cmdAppend(ctx, nil)
+	case "claim":
+		err = cmdClaim(ctx, nil)
+	case "release":
+		err = cmdRelease(ctx, nil)
+	case "reassign":
+		err = cmdReassign(ctx, nil)
+	case "close":
+		err = cmdClose(ctx, nil, "close", func(st *store.Store, id string, in transitionInput, actor string) (any, error) {
+			return domain.Close(st, id, domain.CloseOptions{Outcome: valueOrEmpty(in.Outcome), Actor: actor, Message: in.Message})
+		})
+	case "approve":
+		err = cmdApprove(ctx, nil)
+	case "reject":
+		err = cmdReject(ctx, nil)
+	case "check":
+		err = cmdCheck(ctx, nil)
+	case "help":
+		err = cmdHelp(ctx, nil)
+	}
+	if ctx.metadataParser == nil {
+		return &parser{}
+	}
+	_ = err
+	return ctx.metadataParser
+}
+
 func unexpectedInvocationInput(command string) error {
 	return contract.NewError(contract.ErrInvalidArgument,
-		"Request stdin is only supported by explicit stdin-consuming forms of create, update, release, reject, and close.",
+		"Invocation input is only supported by explicit input-consuming forms of create, update, append, reassign, release, reject, and close.",
 		nil)
 }
 
@@ -467,7 +572,7 @@ type versionOutput struct {
 }
 
 func cmdVersion(ctx *commandContext, rest []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -507,7 +612,62 @@ func scanFlag(rest []string, name string) bool {
 }
 
 func jsonRequested(args []string) bool {
-	return scanFlag(args, "-j") || scanFlag(args, "--json")
+	command := ""
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			break
+		}
+		if arg == "::" {
+			command = ""
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") && (command == "" || !knownCommand(command)) {
+			candidate := canonicalCommand(arg)
+			if command == "" || knownCommand(candidate) {
+				command = candidate
+				continue
+			}
+		}
+		if arg == "-j" || arg == "--json" {
+			return true
+		}
+		if strings.HasPrefix(arg, "--json=") {
+			enabled, err := strconv.ParseBool(strings.TrimPrefix(arg, "--json="))
+			if err == nil && enabled {
+				return true
+			}
+			continue
+		}
+		if def := parserOption(command, arg); def != nil {
+			if def.kind == kindTail {
+				break
+			}
+			if def.kind != kindBool && !strings.Contains(arg, "=") {
+				index++
+			}
+		}
+	}
+	return false
+}
+
+func parserOption(command, arg string) *flagDef {
+	p := parserForCommand(command)
+	if strings.HasPrefix(arg, "--") {
+		name := strings.TrimPrefix(arg, "--")
+		if eq := indexByte(name, '='); eq >= 0 {
+			name = name[:eq]
+		}
+		return p.defs[name]
+	}
+	if len(arg) != 2 || arg[0] != '-' {
+		return nil
+	}
+	name, ok := p.aliases[arg[1:]]
+	if !ok {
+		return nil
+	}
+	return p.defs[name]
 }
 
 func onlyJSONFlags(args []string) bool {

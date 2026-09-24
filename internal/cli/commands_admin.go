@@ -14,7 +14,7 @@ import (
 var helpFlag, helpSeen bool
 
 func cmdInit(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -62,7 +62,7 @@ func cmdInit(ctx *commandContext, args []string) error {
 // create ----------------------------------------------------------------
 
 func cmdDelete(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -92,7 +92,7 @@ func cmdDelete(ctx *commandContext, args []string) error {
 }
 
 func cmdBump(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -140,7 +140,7 @@ func cmdBump(ctx *commandContext, args []string) error {
 }
 
 func cmdCheck(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

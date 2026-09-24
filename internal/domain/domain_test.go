@@ -86,6 +86,14 @@ func TestCreateValidation(t *testing.T) {
 	}
 }
 
+func TestParseRejectsDuplicateDependencies(t *testing.T) {
+	dependency := "20260923-00002"
+	data := RenderNew("Duplicate dependency", 2, nil, "", []string{dependency, dependency}, map[string]string{"objective": "work"})
+	if _, err := ParseTicketFile("20260923-00001", data); err == nil || contractCode(t, err) != contract.ErrInvalidTicket {
+		t.Fatalf("duplicate dependency accepted: %v", err)
+	}
+}
+
 func TestManagedHeadingsHaveBlankLines(t *testing.T) {
 	e := newEnv(t, 19)
 	id := e.create(t, "Spacing", CreateOptions{Sections: map[string]string{
@@ -175,9 +183,11 @@ func TestCreateSuccessAndFields(t *testing.T) {
 			"acceptance": "- [ ] login works\n",
 		},
 	})
-	// Parent/depends on the new ticket.
+	// Parent and dependency relationships can coexist when they do not form a
+	// readiness wait cycle.
+	dependency := e.create(t, "Dependency", CreateOptions{})
 	// Default priority is rendered explicitly in visible metadata.
-	id2 := e.create(t, "Child", CreateOptions{Priority: 2, Parent: id, DependsOn: []string{id}})
+	id2 := e.create(t, "Child", CreateOptions{Priority: 2, Parent: id, DependsOn: []string{dependency}})
 	data, err := os.ReadFile(filepath.Join(e.base, "tickets", id2, "TASK.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +202,7 @@ func TestCreateSuccessAndFields(t *testing.T) {
 		t.Fatalf("old priority syntax emitted:\n%s", s)
 	}
 	// Parent and depends rendered.
-	if !strings.Contains(s, "- Parent: "+id) || !strings.Contains(s, "- Depends on: "+id) {
+	if !strings.Contains(s, "- Parent: "+id) || !strings.Contains(s, "- Depends on: "+dependency) {
 		t.Fatalf("relationships missing:\n%s", s)
 	}
 	// Parse back.
@@ -200,7 +210,7 @@ func TestCreateSuccessAndFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tk.Parent != id || len(tk.DependsOn) != 1 || tk.DependsOn[0] != id {
+	if tk.Parent != id || len(tk.DependsOn) != 1 || tk.DependsOn[0] != dependency {
 		t.Fatalf("round trip: parent=%q depends=%v", tk.Parent, tk.DependsOn)
 	}
 	if tk.State != "hold" {
@@ -607,6 +617,14 @@ func TestPath(t *testing.T) {
 	}
 	if rel["id"] != id || rel["path"] != id+"/TASK.md" {
 		t.Fatalf("rel=%v", rel)
+	}
+	dirRel, err := e.st.TicketDirRelPath(id)
+	if err != nil || dirRel != id {
+		t.Fatalf("ticket directory relative path=%q err=%v", dirRel, err)
+	}
+	listed, err := List(e.st, ListOptions{States: []string{"all"}, Fields: []string{"path"}})
+	if err != nil || len(listed.Items) != 1 || listed.Items[0].Path == nil || *listed.Items[0].Path != id+"/TASK.md" {
+		t.Fatalf("active list path result=%+v err=%v", listed, err)
 	}
 	abs, err := Path(e.st, id, true)
 	if err != nil {

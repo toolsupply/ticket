@@ -129,7 +129,7 @@ func TestVersionEnvelope(t *testing.T) {
 		t.Fatalf("exit=%d out=%q", code, out)
 	}
 	m := exactlyOneJSONObject(t, out)
-	if m["api_version"].(float64) != 1 || m["storage_version"].(float64) != 1 {
+	if m["api_version"].(float64) != 2 || m["storage_version"].(float64) != 1 {
 		t.Fatalf("versions: %v", m)
 	}
 }
@@ -305,6 +305,7 @@ func TestTopLevelHelpAndVersionAliases(t *testing.T) {
 		"  next       Select the next eligible ticket\n",
 		"  wait       Wait for eligible work\n",
 		"  watch      Watch live ticket activity\n",
+		"  reassign   Transfer ownership atomically\n",
 	} {
 		if !strings.Contains(topLevelHelp, line) {
 			t.Fatalf("%q is missing from top-level help: %q", line, topLevelHelp)
@@ -388,6 +389,36 @@ func TestHelp(t *testing.T) {
 		if len(out) == 0 {
 			t.Fatalf("%v: empty output", args)
 		}
+	}
+}
+
+func TestCreateHelpQuotesPositionalObjective(t *testing.T) {
+	t.Chdir(t.TempDir())
+	want := `ticket create "Fix login" "Objective text"`
+	human, code := runCLIHuman(t, "help", "create")
+	if code != 0 || !strings.Contains(human, want) || strings.Contains(human, `ticket create "Fix login" Objective text`) {
+		t.Fatalf("human create help has ambiguous Objective example: exit=%d out=%q", code, human)
+	}
+	jsonOut, code := runCLI(t, "help", "create")
+	if code != 0 {
+		t.Fatalf("JSON create help: exit=%d out=%q", code, jsonOut)
+	}
+	data := exactlyOneJSONObject(t, jsonOut)
+	examples, ok := data["examples"].([]any)
+	if !ok {
+		t.Fatalf("JSON create help examples: %v", data)
+	}
+	found := false
+	for _, example := range examples {
+		if example == want {
+			found = true
+		}
+		if example == `ticket create "Fix login" Objective text` {
+			t.Fatalf("JSON create help has ambiguous Objective example: %v", data)
+		}
+	}
+	if !found {
+		t.Fatalf("JSON create help omitted quoted Objective example: %v", data)
 	}
 }
 
@@ -605,7 +636,7 @@ func TestHumanShowUsesSpaciousCanonicalSectionHeadings(t *testing.T) {
 	}
 	id := exactlyOneJSONObject(t, created)["id"].(string)
 	show, code := runCLIHuman(t, "show", id)
-	want := id + " Readable show\n\nstate:      open\npriority:   P2\n\n## Objective\n\nDo the work.\n\n## Handoff\n\nContinue the work.\n\n"
+	want := id + " Readable show\n\nstate:      open\npriority:   P2\n\n## Objective\n\n### Objective\n\nDo the work.\n\n### Handoff\n\nContinue the work.\n\n"
 	if code != 0 || show != want {
 		t.Fatalf("human show: exit=%d\nout=%q\nwant=%q", code, show, want)
 	}
@@ -1150,7 +1181,7 @@ func TestSCMBatchFailureReportsChangedTicket(t *testing.T) {
 	}
 	firstView := exactlyOneJSONObject(t, mustCLI(t, "show", first))
 	secondView := exactlyOneJSONObject(t, mustCLI(t, "show", second))
-	if firstView["state"] != "completed" || secondView["state"] != "completed" {
+	if firstView["state"] != "closed" || secondView["state"] != "closed" {
 		t.Fatalf("batch states after SCM failure: first=%v second=%v", firstView, secondView)
 	}
 }
@@ -1550,7 +1581,7 @@ func TestCloseAcceptsMultipleTargets(t *testing.T) {
 	}
 	for _, item := range items {
 		row := item.(map[string]any)
-		if row["state"] != "completed" || row["changed"] != true {
+		if row["state"] != "closed" || row["changed"] != true {
 			t.Fatalf("comma close item: %v", row)
 		}
 	}
@@ -1649,9 +1680,9 @@ func TestHumanListConveniencesAndStatus(t *testing.T) {
 		}
 	}
 	listOut, code := runCLIHuman(t, "list", "all")
-	if code != 0 || !strings.Contains(listOut, "completed") || !strings.Contains(listOut, "@worker-a") ||
+	if code != 0 || !strings.Contains(listOut, "closed") || !strings.Contains(listOut, "@worker-a") ||
 		!strings.Contains(listOut, "…") ||
-		!strings.HasPrefix(listOut, fmt.Sprintf("%-10s %-4s %-14s %-42s %s\n", "STATE", "PRI", "ID", "TITLE", "ASSIGNEE")) {
+		!strings.HasPrefix(listOut, fmt.Sprintf("%-10s %-4s %-14s %-42s %-20s %s\n", "STATE", "PRI", "ID", "TITLE", "ASSIGNEE", "BLOCKED BY")) {
 		t.Fatalf("human list table: exit=%d out=%q", code, listOut)
 	}
 
@@ -1761,7 +1792,7 @@ func TestListAliases(t *testing.T) {
 	if code != 0 || !strings.Contains(all, first) || !strings.Contains(all, third) {
 		t.Fatalf("ls -a: exit=%d out=%q", code, all)
 	}
-	for _, args := range [][]string{{"ls", "-la"}, {"list", "-la"}, {"-la"}} {
+	for _, args := range [][]string{{"ls", "-l", "-a"}, {"list", "-l", "-a"}} {
 		out, code := runCLIHuman(t, args...)
 		if code != 0 || !strings.Contains(out, first) || !strings.Contains(out, third) {
 			t.Fatalf("%v: exit=%d out=%q", args, code, out)
@@ -1775,21 +1806,30 @@ func TestListAliases(t *testing.T) {
 	if long, code := runCLIHuman(t, "ls", "-l"); code != 0 || !strings.Contains(long, "STATE") {
 		t.Fatalf("ls -l: exit=%d out=%q", code, long)
 	}
-	idSorted, code := runCLIHuman(t, "ls", "-lt")
+	idSorted, code := runCLIHuman(t, "ls", "-l", "-t")
 	if code != 0 {
-		t.Fatalf("ls -lt: exit=%d out=%q", code, idSorted)
+		t.Fatalf("ls -l -t: exit=%d out=%q", code, idSorted)
 	}
 	assertListOrder(t, idSorted, third, second, first)
-	modifiedSorted, code := runCLIHuman(t, "ls", "-ltu")
+	modifiedSorted, code := runCLIHuman(t, "ls", "-l", "-t", "-u")
 	if code != 0 {
-		t.Fatalf("ls -ltu: exit=%d out=%q", code, modifiedSorted)
+		t.Fatalf("ls -l -t -u: exit=%d out=%q", code, modifiedSorted)
 	}
 	assertListOrder(t, modifiedSorted, third, second, first)
-	allModified, code := runCLIHuman(t, "ls", "-ltua")
+	allModified, code := runCLIHuman(t, "ls", "-l", "-t", "-u", "-a")
 	if code != 0 {
-		t.Fatalf("ls -ltua: exit=%d out=%q", code, allModified)
+		t.Fatalf("ls -l -t -u -a: exit=%d out=%q", code, allModified)
 	}
 	assertListOrder(t, allModified, third, second, first)
+	for _, args := range [][]string{{"list", "-la"}, {"list", "-lt"}, {"list", "-ltu"}, {"list", "-ltua"}} {
+		out, code := runCLI(t, args...)
+		if code == 0 || errCode(t, out) != "invalid_argument" {
+			t.Fatalf("removed compact list alias accepted: %v exit=%d out=%q", args, code, out)
+		}
+	}
+	if out, code := runCLI(t, "list", "--fields", "-la"); code == 0 || errCode(t, out) != "invalid_argument" {
+		t.Fatalf("list field value was rewritten as an alias: exit=%d out=%q", code, out)
+	}
 
 	jsonOut, code := runCLI(t, "ls", "-a")
 	if code != 0 {
@@ -1805,6 +1845,32 @@ func TestListAliases(t *testing.T) {
 	if len(allItems) != 3 || len(windowItems) != 1 ||
 		windowItems[0].(map[string]any)["id"] != allItems[1].(map[string]any)["id"] || window["more"] != true {
 		t.Fatalf("offset window: all=%v window=%v", allItems, window)
+	}
+}
+
+func TestLongListPreservesBareHumanSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	held := exactlyOneJSONObject(t, mustCLI(t, "create", "held ticket"))["id"].(string)
+	open := exactlyOneJSONObject(t, mustCLI(t, "create", "open ticket", "Do the work."))["id"].(string)
+	closed := exactlyOneJSONObject(t, mustCLI(t, "create", "closed ticket", "Already done."))["id"].(string)
+	mustCLI(t, "close", closed)
+	bare, code := runCLIHuman(t, "list")
+	if code != 0 {
+		t.Fatalf("bare list: exit=%d out=%q", code, bare)
+	}
+	long, code := runCLIHuman(t, "list", "-l")
+	if code != 0 {
+		t.Fatalf("long list: exit=%d out=%q", code, long)
+	}
+	for _, id := range []string{held, open} {
+		if strings.Contains(bare, id) != strings.Contains(long, id) || !strings.Contains(long, id) {
+			t.Fatalf("bare and long list selection differs for %s: bare=%q long=%q", id, bare, long)
+		}
+	}
+	if strings.Contains(bare, closed) || strings.Contains(long, closed) {
+		t.Fatalf("terminal ticket leaked into bare/long selection: bare=%q long=%q", bare, long)
 	}
 }
 
@@ -1966,8 +2032,13 @@ func TestCreatePipedBodyAndAliases(t *testing.T) {
 		"# nested H1\n",
 	} {
 		out, code = runCLIStdin(t, body, "create", "Invalid body")
-		if code == 0 || errCode(t, out) != "invalid_argument" {
-			t.Fatalf("invalid piped body accepted: exit=%d out=%q", code, out)
+		if code != 0 {
+			t.Fatalf("forgiving piped body rejected: exit=%d out=%q", code, out)
+		}
+		id := exactlyOneJSONObject(t, out)["id"].(string)
+		createdBody := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))["body"].(string)
+		if !strings.Contains(createdBody, "### nested H1") {
+			t.Fatalf("piped heading was not demoted: %q", createdBody)
 		}
 	}
 	// Duplicate semantic sections are retained as a warning and do not make
@@ -2011,6 +2082,9 @@ func TestEndToEnd(t *testing.T) {
 	if id == "" || !strings.HasPrefix(id, "20") {
 		t.Fatalf("create: %v", m)
 	}
+	if m["path"] != id+"/TASK.md" {
+		t.Fatalf("create path: %v", m)
+	}
 	if m["changed"] != true {
 		t.Fatalf("create changed: %v", m)
 	}
@@ -2032,6 +2106,9 @@ func TestEndToEnd(t *testing.T) {
 	m = exactlyOneJSONObject(t, out)
 	if m["id"] != id {
 		t.Fatalf("show: %v", m)
+	}
+	if m["path"] != id+"/TASK.md" {
+		t.Fatalf("show path: %v", m)
 	}
 	if _, ok := m["attachment_path"]; ok {
 		t.Fatalf("show advertised absent attachments: %v", m)
@@ -2132,6 +2209,20 @@ func TestEndToEnd(t *testing.T) {
 	m = exactlyOneJSONObject(t, out)
 	if m["path"] != id+"/TASK.md" {
 		t.Fatalf("path: %v", m)
+	}
+	if _, code = runCLI(t, "close", id); code != 0 {
+		t.Fatalf("close before archive: exit=%d", code)
+	}
+	if _, code = runCLI(t, "archive", id); code != 0 {
+		t.Fatalf("archive: exit=%d", code)
+	}
+	archivedPath, code := runCLI(t, "path", id)
+	if code != 0 {
+		t.Fatalf("archived path: exit=%d out=%q", code, archivedPath)
+	}
+	archivedResult := exactlyOneJSONObject(t, archivedPath)
+	if archivedResult["path"] != "archive/"+id+"/TASK.md" {
+		t.Fatalf("archived path: %v", archivedResult)
 	}
 	// Human output is the default.
 	out, code = runCLIHuman(t, "list")

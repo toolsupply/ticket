@@ -13,6 +13,14 @@ import (
 // sibling, and atomically replaces it. The ticket-root lock protects cooperating
 // ticket processes; external editors are outside this guarantee.
 func (st *Store) ReplaceTask(id string, data []byte, maxBytes int) (bool, error) {
+	loc, err := st.TicketLocation(id)
+	if err != nil {
+		return false, err
+	}
+	if loc.Archived() {
+		return false, contract.NewError(contract.ErrArchived,
+			"Archived tickets are read-only; unarchive the ticket before modifying it.", map[string]any{"id": id})
+	}
 	if st.root != nil {
 		return st.replaceTaskRoot(id, data, maxBytes)
 	}

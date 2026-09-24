@@ -2,6 +2,30 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.2.0] - 2026-09-23
+
+### Added
+
+- Added `ticket query` command and related query language.
+- Added shell-friendly TQL predicates and word operators for list, graph, and
+  deliberate bulk consumers, including explicit `-q` query tails.
+- Added in-process `query ... :: list|graph|close|archive|approve` composition.
+  without subprocess or stdout transport.
+- Added `ticket graph` and `ticket list --graph`.
+- Added atomic ownership reassignment and handoff updates.
+- Added trailing `#tag` shorthand to human title input.
+
+### Changed
+
+- API version is now 2
+- Archive and query workflows now share the same ordered selection model;
+  archived tickets can be selected explicitly without changing active-ticket
+  defaults.
+- Renamed the canonical terminal lifecycle state from `completed` to `closed`.
+- Existing `completed` selectors and Markdown state values remain compatible
+  and normalize to canonical `closed`; no storage migration is required.
+- Fixed `ticket edit` regression from 0.1.8.
+
 ## [0.1.8] - 2026-09-21
 
 ### Added
@@ -97,6 +121,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.2.0]: https://github.com/toolsupply/ticket/releases/tag/v0.2.0
 [0.1.8]: https://github.com/toolsupply/ticket/releases/tag/v0.1.8
 [0.1.7]: https://github.com/toolsupply/ticket/releases/tag/v0.1.7
 [0.1.6]: https://github.com/toolsupply/ticket/releases/tag/v0.1.6

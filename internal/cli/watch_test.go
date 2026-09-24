@@ -23,6 +23,19 @@ func TestDeriveWatchEventsUsesConservativeSemanticKinds(t *testing.T) {
 	}
 }
 
+func TestWatchLifecycleAliasesAndClosedEvent(t *testing.T) {
+	if !watchStateFilter("closed") || !watchStateFilter("completed") {
+		t.Fatal("watch did not accept canonical and legacy closed filters")
+	}
+	if watchStateFilter("all") == false || watchStateFilter("unknown") {
+		t.Fatal("watch state filter handling changed")
+	}
+	event, message := stateWatchEvent("signoff", "closed")
+	if event != "closed" || message != "closed" {
+		t.Fatalf("close watch event: event=%q message=%q", event, message)
+	}
+}
+
 func TestDeriveWatchEventsCoversTicketChangesAndUnknownEdits(t *testing.T) {
 	base := watchSnapshot{ID: "20260921-00001", Title: "Ticket", State: "open", FileBytes: []byte("old")}
 	tests := []struct {

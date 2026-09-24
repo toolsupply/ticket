@@ -18,7 +18,7 @@ func TestMarkdownOutputForQueryAndTicketCommands(t *testing.T) {
 	}
 
 	list, code := runCLIHuman(t, "list", "--markdown")
-	if code != 0 || !strings.Contains(list, "| State | Pri | ID | Title | Assignee |\n") || !strings.Contains(list, "| open | P2 | "+id+" | Markdown output |  |") {
+	if code != 0 || !strings.Contains(list, "| State | Pri | ID | Title | Assignee | Blocked by |\n") || !strings.Contains(list, "| open | P2 | "+id+" | Markdown output |  | - |") {
 		t.Fatalf("markdown list: exit=%d out=%q", code, list)
 	}
 	ready, code := runCLIHuman(t, "ready", "--markdown")

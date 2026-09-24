@@ -20,7 +20,7 @@ type EditResult struct {
 }
 
 func cmdEdit(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -57,7 +57,7 @@ func cmdHold(ctx *commandContext, args []string) error {
 }
 
 func cmdOpen(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -133,7 +133,7 @@ func cmdOpen(ctx *commandContext, args []string) error {
 }
 
 func cmdState(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -158,7 +158,7 @@ func cmdState(ctx *commandContext, args []string) error {
 	state := p.positionals[1]
 	if !isTicketState(state) || state == "all" {
 		return contract.NewError(contract.ErrInvalidArgument,
-			"State must be open, hold, review, signoff, completed, or rejected.", nil)
+			"State must be open, hold, review, signoff, closed, or rejected.", nil)
 	}
 	if err := ctx.check(); err != nil {
 		return err
@@ -175,7 +175,7 @@ func cmdState(ctx *commandContext, args []string) error {
 }
 
 func cmdReview(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -218,7 +218,7 @@ func looksLikeTicketRef(value string) bool {
 }
 
 func cmdWorkflowMove(ctx *commandContext, args []string, command string, run func(*store.Store, string, string, *string, *string) (any, error)) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

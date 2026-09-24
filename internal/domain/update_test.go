@@ -348,6 +348,66 @@ func TestManagedSectionsAppendAfterObjective(t *testing.T) {
 	}
 }
 
+func TestUpdateObjectiveAppendIsAtomicAndPreservesExistingContent(t *testing.T) {
+	e := newEnv(t, 701)
+	id := e.create(t, "Append objective", CreateOptions{Sections: map[string]string{
+		"objective": "First paragraph.",
+	}})
+	before, err := ReadTicket(e.st, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Update(e.st, id, UpdateOptions{AppendSections: map[string]string{
+		"objective": "Second paragraph.",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || len(res.ChangedFields) != 1 || res.ChangedFields[0] != "sections.objective" {
+		t.Fatalf("append result: %+v", res)
+	}
+	after, err := ReadTicket(e.st, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.SectionText("objective"); got != "First paragraph.\n\nSecond paragraph." {
+		t.Fatalf("objective=%q", got)
+	}
+	if before.State != after.State || before.Assignee != after.Assignee {
+		t.Fatalf("metadata changed across append: before=%+v after=%+v", before, after)
+	}
+	if _, err := Update(e.st, id, UpdateOptions{AppendSections: map[string]string{"objective": ""}}); err == nil {
+		t.Fatal("empty objective append accepted")
+	}
+	if _, err := Update(e.st, id, UpdateOptions{
+		Sections:       map[string]string{"objective": "replacement"},
+		AppendSections: map[string]string{"objective": "append"},
+	}); err == nil {
+		t.Fatal("replace and append accepted together")
+	}
+	if _, err := Update(e.st, id, UpdateOptions{AppendSections: map[string]string{"objective": "# structural heading"}}); err == nil {
+		t.Fatal("structured heading append accepted")
+	}
+	e2 := newEnv(t, 702)
+	id2 := e2.create(t, "Foreign append", CreateOptions{Sections: map[string]string{"objective": "Keep this."}})
+	if _, err := Claim(e2.st, id2, ClaimOptions{Actor: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(e2.st, id2, UpdateOptions{
+		AppendSections: map[string]string{"objective": "Must not change."},
+		Actor:          "coder",
+	}); err == nil {
+		t.Fatal("foreign append accepted")
+	}
+	foreign, err := ReadTicket(e2.st, id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := foreign.SectionText("objective"); got != "Keep this." || foreign.Assignee != "other" {
+		t.Fatalf("foreign append mutated ticket: objective=%q assignee=%q", got, foreign.Assignee)
+	}
+}
+
 // F4: the splice engine applies every non-overlapping op (zero-width
 // insertions at the same offset included); a true overlap is an error,
 // never a silent skip reported as applied.

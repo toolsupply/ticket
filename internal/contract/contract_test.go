@@ -17,6 +17,7 @@ var exitCodeClasses = map[ErrorCode]int{
 	ErrAlreadyClaimed:       4,
 	ErrConflict:             4,
 	ErrInvalidTransition:    4,
+	ErrArchived:             4,
 	ErrDependencyUnresolved: 4,
 	ErrLockTimeout:          4,
 
@@ -24,6 +25,7 @@ var exitCodeClasses = map[ErrorCode]int{
 	ErrInvalidTicket:     5,
 	ErrDependencyCycle:   5,
 	ErrParentCycle:       5,
+	ErrReadinessCycle:    5,
 	ErrDanglingReference: 5,
 
 	ErrIOError:               6,

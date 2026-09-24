@@ -28,11 +28,12 @@ type NextResult struct {
 
 // NextOptions selects one worker queue and its simple filters.
 type NextOptions struct {
-	Queue    string
-	Tags     []string
-	Priority *int
-	Claim    bool
-	Actor    string
+	Queue       string
+	Tags        []string
+	WithoutTags []string
+	Priority    *int
+	Claim       bool
+	Actor       string
 }
 
 // ReadyOptions selects the inspection queue and its readiness filters.
@@ -59,7 +60,12 @@ func Readiness(st *store.Store, id string) (*ReadinessView, error) {
 	if err != nil {
 		return nil, err
 	}
-	tickets, err := loadGraph(st)
+	var tickets []*Ticket
+	if t.Archived {
+		tickets, err = loadAllGraph(st)
+	} else {
+		tickets, err = loadGraph(st)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +183,10 @@ func NextWithOptions(st *store.Store, opts NextOptions) (*NextResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	opts.WithoutTags, err = normalizeTagExclusions(opts.WithoutTags)
+	if err != nil {
+		return nil, err
+	}
 	if opts.Priority != nil && (*opts.Priority < 0 || *opts.Priority > 4) {
 		return nil, contract.NewError(contract.ErrInvalidArgument, "Priority must be an integer 0-4.", nil)
 	}
@@ -211,12 +221,12 @@ func NextWithOptions(st *store.Store, opts NextOptions) (*NextResult, error) {
 	}
 	var selected *ListResult
 	if queue == "open" {
-		selected, err = ReadyWithOptions(st, ReadyOptions{Queue: queue, Filters: ListOptions{Tags: opts.Tags, Priority: opts.Priority,
+		selected, err = ReadyWithOptions(st, ReadyOptions{Queue: queue, Filters: ListOptions{Tags: opts.Tags, WithoutTags: opts.WithoutTags, Priority: opts.Priority,
 			Fields: []string{"id", "title", "state", "priority", "assignee", "tags"},
 			Limit:  1, LimitSet: true}})
 	} else {
 		selected, err = ReadyWithOptions(st, ReadyOptions{Queue: queue, Filters: ListOptions{
-			Tags: opts.Tags, Priority: opts.Priority,
+			Tags: opts.Tags, WithoutTags: opts.WithoutTags, Priority: opts.Priority,
 			Fields: []string{"id", "title", "state", "priority", "assignee", "tags"},
 			Limit:  1, LimitSet: true,
 		}})
@@ -262,6 +272,11 @@ func summaryMatchesWorkFilters(item Summary, opts NextOptions) bool {
 			return false
 		}
 	}
+	for _, tag := range opts.WithoutTags {
+		if have[tag] {
+			return false
+		}
+	}
 	return true
 }
 
@@ -285,12 +300,12 @@ func readinessForWithChildren(t *Ticket, byID map[string]*Ticket, children map[s
 			blockers = append(blockers, ReadinessBlocker{"dependency_missing", dep, "Dependency is missing."})
 		} else if other.State == "rejected" {
 			blockers = append(blockers, ReadinessBlocker{"dependency_rejected", dep, "Dependency is rejected."})
-		} else if other.State != "completed" {
-			blockers = append(blockers, ReadinessBlocker{"dependency_open", dep, "Dependency is not completed."})
+		} else if other.State != StateClosed {
+			blockers = append(blockers, ReadinessBlocker{"dependency_open", dep, "Dependency is not closed."})
 		}
 	}
 	for _, child := range children[t.ID] {
-		if child.State != "completed" && child.State != "rejected" {
+		if !child.IsTerminal() {
 			blockers = append(blockers, ReadinessBlocker{"open_children", child.ID, "A nonterminal child ticket remains."})
 		}
 	}

@@ -90,12 +90,12 @@ func SplitMetadata(data []byte) (fm, body []byte, hadBOM bool, diags []Diagnosti
 	}
 	nl := bytes.IndexByte(b, '\n')
 	if nl < 0 {
-		diags = append(diags, Diagnostic{"error", "no_metadata", 1, "TASK.md must start with a metadata metadata block."})
+		diags = append(diags, Diagnostic{"error", "no_metadata", 1, "TASK.md must start with a metadata block."})
 		return nil, nil, hadBOM, diags
 	}
 	first := string(b[:nl])
 	if first != "---" && first != "---\r" {
-		diags = append(diags, Diagnostic{"error", "no_metadata", 1, "TASK.md must start with a metadata metadata block."})
+		diags = append(diags, Diagnostic{"error", "no_metadata", 1, "TASK.md must start with a metadata block."})
 		return nil, nil, hadBOM, diags
 	}
 	rest := b[nl+1:]
@@ -118,7 +118,7 @@ func SplitMetadata(data []byte) (fm, body []byte, hadBOM bool, diags []Diagnosti
 			return fm, rest[fmEnd+1:], hadBOM, nil
 		}
 		if nnl < 0 {
-			diags = append(diags, Diagnostic{"error", "unterminated_metadata", 1, "The metadata metadata block is not terminated by ---."})
+			diags = append(diags, Diagnostic{"error", "unterminated_metadata", 1, "The metadata block is not terminated by ---."})
 			return nil, nil, hadBOM, diags
 		}
 		offset += nnl + 1
@@ -415,4 +415,61 @@ func lineEnding(line string) string {
 func ContainsTopLevelHeading(text string) bool {
 	_, heads := scanHeadings([]byte(text))
 	return len(heads) > 0
+}
+
+// PrepareObjective sanitizes forgiving human Markdown for storage as section
+// content. H1 and H2 headings outside fenced code become H3 headings. When
+// extractTitle is true, only a first meaningful H1 may supply the title; the
+// heading and its following separator are removed from the objective.
+func PrepareObjective(text string, extractTitle bool) (title, objective string) {
+	body := []byte(text)
+	if extractTitle {
+		lines, heads := scanHeadings(body)
+		first := firstNonBlankLine(lines)
+		for _, head := range heads {
+			if head.line != first || head.level != 1 || strings.TrimSpace(head.text) == "" {
+				continue
+			}
+			title = strings.TrimSpace(head.text)
+			body = append([]byte(nil), body[head.contentStart:]...)
+			break
+		}
+	}
+	return title, string(demoteHeadings(body))
+}
+
+func demoteHeadings(body []byte) []byte {
+	lines, heads := scanHeadings(body)
+	if len(heads) == 0 {
+		return append([]byte(nil), body...)
+	}
+	byStart := make(map[int]heading, len(heads))
+	for _, head := range heads {
+		byStart[head.start] = head
+	}
+	var out bytes.Buffer
+	pos := 0
+	for _, line := range lines {
+		head, ok := byStart[line.start]
+		if !ok {
+			continue
+		}
+		lineEnd := line.end
+		if lineEnd > line.start && body[lineEnd-1] == '\n' {
+			lineEnd--
+		}
+		if lineEnd > line.start && body[lineEnd-1] == '\r' {
+			lineEnd--
+		}
+		indent := 0
+		for indent < lineEnd-line.start && indent < 3 && body[line.start+indent] == ' ' {
+			indent++
+		}
+		out.Write(body[pos : line.start+indent])
+		out.WriteString("###")
+		out.Write(body[line.start+indent+head.level : lineEnd])
+		pos = lineEnd
+	}
+	out.Write(body[pos:])
+	return out.Bytes()
 }

@@ -189,7 +189,7 @@ func TestInteractiveShellPreservesWindowsStyleBackslashes(t *testing.T) {
 	mustCLI(t, "init")
 	unsetEnvironment(t, "TICKET_CURRENT")
 
-	out, stderr, code := runShell(t, `create "C:\Users\Ada Lovelace\Tickets" "Keep the Windows path literal."`+"\nstatus\nexit\n")
+	out, stderr, code := runShell(t, `create "C:\Users\Ada Lovelace\Tickets"`+"\nstatus\nexit\n")
 	if code != 0 || !strings.Contains(out, `C:\Users\Ada Lovelace\Tickets`) {
 		t.Fatalf("Windows-style shell argument: code=%d stdout=%q stderr=%q", code, out, stderr)
 	}

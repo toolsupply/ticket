@@ -60,17 +60,24 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 	case *currentTicketSummary:
 		fmt.Fprintf(stdout, "%s  %s  %s\n", safeSingleLine(r.ID), safeSingleLine(r.State), safeSingleLine(r.Title))
 	case *domain.CreateResult:
-		fmt.Fprintf(stdout, "created %s %s\n", safeSingleLine(r.ID), safeSingleLine(r.Path))
+		fmt.Fprintf(stdout, "created %s\n\n", safeSingleLine(r.ID))
+		fmt.Fprintf(stdout, "title:      %s\n", truncateHuman(safeSingleLine(r.Title), 40))
 		if r.State != "" {
 			fmt.Fprintf(stdout, "state:      %s\npriority:   P%d\n", safeSingleLine(r.State), r.Priority)
 			if r.Objective != "" {
-				fmt.Fprintf(stdout, "objective:  %s\n", safeMultiline(r.Objective))
+				fmt.Fprintf(stdout, "\nobjective:  %s\n", truncateHuman(safeSingleLine(r.Objective), 40))
 			}
 		}
 	case *domain.DeleteResult:
 		fmt.Fprintf(stdout, "deleted %s\n", safeSingleLine(r.ID))
 	case *domain.BatchDeleteResult:
 		fmt.Fprintf(stdout, "deleted %d tickets\n", len(r.Items))
+	case *domain.ArchiveResult:
+		if r.Archived {
+			fmt.Fprintf(stdout, "archived %s\n", safeSingleLine(r.ID))
+		} else {
+			fmt.Fprintf(stdout, "unarchived %s\n", safeSingleLine(r.ID))
+		}
 	case *domain.NextResult:
 		if r.Item == nil {
 			fmt.Fprintln(stdout, "no eligible work")
@@ -92,7 +99,17 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 			fmt.Fprintf(stdout, "unchanged %s\n", safeSingleLine(r.ID))
 		}
 	case *domain.ListResult:
-		fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %s\n", "STATE", "PRI", "ID", "TITLE", "ASSIGNEE")
+		if r.IDsOnly {
+			for _, it := range r.Items {
+				fmt.Fprintln(stdout, safeSingleLine(it.ID))
+			}
+			break
+		}
+		if r.ShowDependencies {
+			fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %-20s %s\n", "STATE", "PRI", "ID", "TITLE", "ASSIGNEE", "BLOCKED BY")
+		} else {
+			fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %s\n", "STATE", "PRI", "ID", "TITLE", "ASSIGNEE")
+		}
 		for _, it := range r.Items {
 			state := ""
 			if it.State != nil {
@@ -110,10 +127,18 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 			if it.Assignee != nil {
 				assignee = "@" + *it.Assignee
 			}
-			fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %s\n",
-				truncateHuman(safeSingleLine(state), 10), truncateHuman(safeSingleLine(pri), 4), safeSingleLine(it.ID),
-				truncateHuman(safeSingleLine(title), 42), truncateHuman(safeSingleLine(assignee), 20))
+			if r.ShowDependencies {
+				fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %-20s %s\n",
+					truncateHuman(safeSingleLine(state), 10), truncateHuman(safeSingleLine(pri), 4), safeSingleLine(it.ID),
+					truncateHuman(safeSingleLine(title), 42), truncateHuman(safeSingleLine(assignee), 20), formatDependencies(it.Dependencies, 30))
+			} else {
+				fmt.Fprintf(stdout, "%-10s %-4s %-14s %-42s %s\n",
+					truncateHuman(safeSingleLine(state), 10), truncateHuman(safeSingleLine(pri), 4), safeSingleLine(it.ID),
+					truncateHuman(safeSingleLine(title), 42), truncateHuman(safeSingleLine(assignee), 20))
+			}
 		}
+	case *domain.GraphResult:
+		renderGraph(stdout, r)
 	case *domain.StatusView:
 		renderHumanStatus(stdout, r)
 	case *domain.ShowView:
@@ -184,11 +209,21 @@ func renderPlainHumanTo(stdout *bytes.Buffer, cmd string, res any) error {
 		} else {
 			fmt.Fprintf(stdout, "already released %s\n", safeSingleLine(r.ID))
 		}
+	case *domain.ReassignResult:
+		if r.Changed {
+			fmt.Fprintf(stdout, "reassigned %s (assignee=%s)\n", safeSingleLine(r.ID), safeSingleLine(r.Assignee))
+		} else {
+			fmt.Fprintf(stdout, "already assigned %s (assignee=%s)\n", safeSingleLine(r.ID), safeSingleLine(r.Assignee))
+		}
 	case *domain.TransitionResult:
 		renderTransition(stdout, r)
 	case *domain.BatchTransitionResult:
 		for i := range r.Items {
 			renderTransition(stdout, &r.Items[i])
+		}
+	case *domain.BatchArchiveResult:
+		for _, item := range r.Items {
+			fmt.Fprintf(stdout, "%s: archived\n", safeSingleLine(item.ID))
 		}
 	default:
 		fmt.Fprintf(stdout, "ok (%s)\n", cmd)
@@ -217,6 +252,33 @@ func truncateHuman(s string, width int) string {
 		return string(runes[:width])
 	}
 	return string(runes[:width-1]) + "…"
+}
+
+func formatDependencies(dependencies []domain.DependencySummary, width int) string {
+	if len(dependencies) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(dependencies))
+	for index, dependency := range dependencies {
+		id := dependency.ID
+		if len(id) > 5 {
+			id = id[len(id)-5:]
+		}
+		if dependency.Missing {
+			id += "(missing)"
+		} else if dependency.Satisfied {
+			id += "✓"
+		}
+		if dependency.Archived {
+			id += "(arch)"
+		}
+		candidate := strings.Join(append(append([]string{}, parts...), id), ", ")
+		if len([]rune(candidate)) > width {
+			return strings.Join(parts, ", ") + fmt.Sprintf(", +%d", len(dependencies)-index)
+		}
+		parts = append(parts, id)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func decoratorCommand(cmd string) bool {
@@ -293,12 +355,24 @@ func splitCommandLine(command string) ([]string, error) {
 func renderMarkdownTo(stdout *bytes.Buffer, cmd string, res any) error {
 	switch r := res.(type) {
 	case *domain.ListResult:
-		fmt.Fprintln(stdout, "| State | Pri | ID | Title | Assignee |")
-		fmt.Fprintln(stdout, "|---|---:|---|---|---|")
+		if r.ShowDependencies {
+			fmt.Fprintln(stdout, "| State | Pri | ID | Title | Assignee | Blocked by |")
+			fmt.Fprintln(stdout, "|---|---:|---|---|---|---|")
+		} else {
+			fmt.Fprintln(stdout, "| State | Pri | ID | Title | Assignee |")
+			fmt.Fprintln(stdout, "|---|---:|---|---|---|")
+		}
 		for _, it := range r.Items {
-			fmt.Fprintf(stdout, "| %s | %s | %s | %s | %s |\n",
-				markdownCell(safeSingleLine(pointerString(it.State))), markdownCell(safeSingleLine(pointerPriority(it.Priority))),
-				markdownCell(safeSingleLine(it.ID)), markdownCell(safeSingleLine(pointerString(it.Title))), markdownCell(safeSingleLine(pointerAssignee(it.Assignee))))
+			if r.ShowDependencies {
+				fmt.Fprintf(stdout, "| %s | %s | %s | %s | %s | %s |\n",
+					markdownCell(safeSingleLine(pointerString(it.State))), markdownCell(safeSingleLine(pointerPriority(it.Priority))),
+					markdownCell(safeSingleLine(it.ID)), markdownCell(safeSingleLine(pointerString(it.Title))), markdownCell(safeSingleLine(pointerAssignee(it.Assignee))),
+					markdownCell(formatDependencies(it.Dependencies, 30)))
+			} else {
+				fmt.Fprintf(stdout, "| %s | %s | %s | %s | %s |\n",
+					markdownCell(safeSingleLine(pointerString(it.State))), markdownCell(safeSingleLine(pointerPriority(it.Priority))),
+					markdownCell(safeSingleLine(it.ID)), markdownCell(safeSingleLine(pointerString(it.Title))), markdownCell(safeSingleLine(pointerAssignee(it.Assignee))))
+			}
 		}
 		if r.More {
 			fmt.Fprintln(stdout, "\n_more: true_")
@@ -411,6 +485,9 @@ func titleCaseSection(key string) string {
 func renderHumanStatus(stdout *bytes.Buffer, r *domain.StatusView) {
 	fmt.Fprintf(stdout, "%s  %s\n\n", safeSingleLine(r.ID), safeSingleLine(r.Title))
 	fmt.Fprintf(stdout, "state:      %s\n", safeSingleLine(r.State))
+	if r.Archived {
+		fmt.Fprintln(stdout, "archived: true")
+	}
 	fmt.Fprintf(stdout, "priority:   P%d\n", r.Priority)
 	if r.Objective != "" {
 		fmt.Fprintf(stdout, "objective:  %s\n", safeMultiline(r.Objective))

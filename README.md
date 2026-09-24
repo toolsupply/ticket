@@ -90,8 +90,6 @@ Initialize a ticket repository:
 ticket init
 ```
 
-Inspect the selected repository metadata for integrations:
-
 ### Human workflow
 
 Create some tickets and list all active (non-closed and non-rejected) tickets:
@@ -129,20 +127,49 @@ ticket close
 
 The submit and review lifecycle states are optional; tickets can be closed or rejected from any state.
 
-### Live activity watch
+### Querying tickets with TQL
 
-Follow ticket changes from the current point in time:
+Ticket Query Language (TQL) is the preferred shell-friendly way to select
+tickets. It uses separate argv words, so ordinary Bash, POSIX shell,
+PowerShell, and `cmd.exe` invocations do not need expression quoting:
 
 ```sh
-ticket watch
-ticket watch --tag backend --event claimed --event submitted
+ticket list state:open assignee:coder
+ticket list state:open priority le P2
+ticket list state:closed
+```
+
+For scripts, `-q` / `--query` makes the query boundary explicit and consumes
+all remaining argv tokens, so command options must come first:
+
+```sh
+ticket close -m "Accepted" -q state:signoff tag:release
+ticket approve -q state:review unclaimed
+ticket graph -q not terminal
+```
+
+TQL queries can be composed directly with an in-process consumer:
+
+```sh
+ticket query state:open ready :: graph
+ticket query state:signoff :: close -m "Accepted"
+ticket query state:review unclaimed :: approve
+ticket query state:open :: list --deps --fields id,title
+ticket query terminal :: archive
+```
+
+TQL `or` has lower precedence than the implicit `and`:
+
+```sh
+ticket query state:open tag:backend or state:review tag:backend
 ```
 
 ### Hints
 
-- `ticket -i` is a simple shell mode where human does not have to type ticket in front of every command
-- Use shell command execution in your harness to control ticket, for example `!ticket list open`
-- Use `ticket ready` to check if there are actionable tickets or `ticket list review` to check if there is anything to review
+- `ticket -i` is a simple shell mode where human does not have to type ticket in front of every command.
+- Use shell command execution in your harness to control ticket, for example `!ticket list open`.
+- Use #tags suffix in title for quick auto-taggig.
+- Use `ticket ready` to check if there are actionable tickets or `ticket list review` to check if there is anything to reivew.
 - Instruct reviewer agent to close tickets once happy to bypass human signoff, example prompt also trigging Codex goals:
 
 ```sh
@@ -164,6 +191,9 @@ tickets/
 │  ├─ TASK.md
 │  └─ attachments/
 │     └─ design.png
+└─ archive/
+   └─ 20260919-34567/
+      └─ TASK.md
 ```
 
 The `TASK.md` files contain all ticket metadata, objectives, handoffs, and work logs.
@@ -172,25 +202,48 @@ The files can be edited directly in a text editor, but when there may be concurr
 
 A ticket repository has no fixed place on the filesystem. It can live inside the source tree it describes or in a separate working tree.
 
-### Dependencies and parent tickets
-
-Tickets can depend on other tickets and can be grouped under parent work.
-
-The CLI takes the relationship graph into account when determining which work is actionable. Agents and scripts therefore do not need to independently reason about whether dependencies or child work currently block a ticket.
-
-### Ticket attachments
+### Attachments
 
 Supplementary material can be stored under a ticket's `attachments/`
 directory. The ticket manager leaves those files opaque; humans and agents
 can use their normal filesystem tools to organize, read, and update them.
 `TASK.md` remains the ticket manager's authoritative file.
 
+### Archive
+
+Closed and rejected, unassigned tickets can be moved out of the active
+queue with `ticket archive ID`. The ticket keeps its lifecycle state and
+history; only its location changes to `tickets/archive/ID/`. Archived tickets
+are read-only until returned with `ticket unarchive ID`.
+
+The `list`, `ready`, `next`, and `wait` commands use the active queue.
+
+Use `ticket list --archived` for archived tickets or `ticket list --all` for
+both namespaces. `show`, explicit ID lookup, and relationship references also
+work for archived tickets.
+
+### Dependencies and parent tickets
+
+Tickets can depend on other tickets and can be grouped under parent work.
+
+`ticket` takes the relationship graph into account when determining which work is actionable. Agents and scripts therefore do not need to independently reason about whether dependencies or child work currently block a ticket.
+
+Inspect dependency relationships:
+
+```sh
+ticket list --graph
+ticket graph ID
+ticket graph ID --reverse
+ticket graph ID --depth 2 --ascii
+ticket graph --all
+```
+
 ### Ticket lifecycle
 
 The normal workflow is:
 
 ```text
-hold ─open─> open ─submit─> review ─approve─> signoff ─close─> completed
+hold ─open─> open ─submit─> review ─approve─> signoff ─close─> closed
 ```
 
 | State | Purpose | Normal transition |
@@ -198,8 +251,8 @@ hold ─open─> open ─submit─> review ─approve─> signoff ─close─> c
 | `hold` | Drafted or intentionally paused | `open` |
 | `open` | Available for implementation | `submit` → `review` |
 | `review` | Awaiting independent review | `approve` → `signoff` |
-| `signoff` | Awaiting human acceptance | `close` → `completed` |
-| `completed` | Accepted and finished | — |
+| `signoff` | Awaiting human acceptance | `close` → `closed` |
+| `closed` | Accepted and finished | — |
 | `rejected` | Abandoned or declined | — |
 
 `open` can return a ticket from any state to implementation work. `reject` abandons work rather than requesting changes.
@@ -429,16 +482,16 @@ In this configuration, Git synchronization performed by `ticket` advances the sa
 
 ### Security and operational boundaries
 
-Ticket's workflow metadata coordinates people and agents; it is not an
-authentication or authorization system. `TICKET_ACTOR` and `--actor` identify a
-worker but do not grant permissions. Independent review and human closure are
-process boundaries, not a substitute for repository access controls.
+`ticket` does not contain access controls of any kind; access to tickets is
+controlled by filesystem permissions. `TICKET_ACTOR` and `--actor` identify a
+worker but neither grant nor enforce permissions. Independent review and human
+closure are process boundaries, not substitutes for repository access controls.
 
-The `!` shell executes commands through the user's normal shell and operating
-system permissions. SCM hooks and configured editor, decorator, Git, or SVN
-commands are likewise external programs; Ticket does not sandbox them.
+Configured editors, decorators, SCM hooks, and Git or SVN commands are external
+programs. `ticket` does not add a sandbox around them; they run within the
+environment and permissions of the process invoking `ticket`.
 
-An explicit Git push destination narrows what Ticket publishes, but it cannot
+An explicit Git push destination narrows what `ticket` publishes, but it cannot
 isolate a shared branch from its required unpublished ancestor commits. Use a
 dedicated branch or worktree when history isolation matters.
 
@@ -453,21 +506,7 @@ make build && ./bin/ticket version
 ## Tests
 
 ```sh
-go test ./...
-go vet ./...
-go test -race ./...
-```
-
-For a focused race check while developing, specify the changed package:
-
-```sh
-make race RACE_PKGS=./internal/cli
-```
-
-Run a clean-cache full race check before submitting work:
-
-```sh
-make race-fresh
+go test ./... && go vet ./...
 ```
 
 ## Inspiration

@@ -185,10 +185,12 @@ func TestSessionDoesNotConsumeStdinPayloads(t *testing.T) {
 	for _, args := range [][]string{
 		{"create", "--input", "-"},
 		{"update", id, "--input", "-"},
+		{"append", id, "-"},
 		{"release", id, "--input", "-", "--actor", "agent"},
+		{"reassign", id, "agent", "--input", "-"},
 		{"reject", id, "--input", "-", "--actor", "agent"},
 	} {
-		if err := instance.dispatch(args, &output); err == nil || !strings.Contains(err.Error(), "cannot read structured input from stdin") {
+		if err := instance.dispatch(args, &output); err == nil || !strings.Contains(err.Error(), "cannot consume input from the session stream") {
 			t.Fatalf("session accepted stdin payload %v: %v", args, err)
 		}
 	}
@@ -239,7 +241,7 @@ func TestSessionExplicitInputSupportsAllStdinCommandForms(t *testing.T) {
 		t.Fatalf("session reject result: %v", rejected)
 	}
 	closed := dispatchJSON([]string{"close", thirdID, "--input", "-"}, strings.NewReader(`{"outcome":"completed by session"}`))
-	if closed["id"] != thirdID || closed["state"] != "completed" {
+	if closed["id"] != thirdID || closed["state"] != "closed" {
 		t.Fatalf("session close result: %v", closed)
 	}
 }

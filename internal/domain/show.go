@@ -50,6 +50,7 @@ type Prerequisite struct {
 // ShowView is the show response.
 type ShowView struct {
 	ID                string                 `json:"id"`
+	Archived          bool                   `json:"archived"`
 	TicketRoot        string                 `json:"-"`
 	Path              string                 `json:"path"`
 	AttachmentPath    string                 `json:"attachment_path,omitempty"`
@@ -75,6 +76,7 @@ type ShowView struct {
 // blockers are kept separate from the ticket's lifecycle state and ownership.
 type StatusView struct {
 	ID        string             `json:"id"`
+	Archived  bool               `json:"archived"`
 	Title     string             `json:"title"`
 	State     string             `json:"state"`
 	Priority  int                `json:"priority"`
@@ -99,7 +101,7 @@ func Show(st *store.Store, ref string, opts ShowOptions) (*ShowView, error) {
 			seen[k] = true
 			if !isKnownSection(k) {
 				return nil, contract.NewError(contract.ErrInvalidArgument,
-					"Unknown section key "+k+". v1 section selection accepts known keys only.", nil)
+					"Unknown section key "+k+". Section selection accepts known keys only.", nil)
 			}
 		}
 	}
@@ -132,7 +134,8 @@ func Status(st *store.Store, ref string) (*StatusView, error) {
 	}
 	status := &StatusView{
 		ID: t.ID, Title: t.Title, State: t.State, Priority: t.Priority,
-		Created: creationDate(t.ID), Modified: modified.Format(time.RFC3339),
+		Archived: t.Archived,
+		Created:  creationDate(t.ID), Modified: modified.Format(time.RFC3339),
 		Objective: objectivePreview(t),
 	}
 	if t.Assignee != "" {
@@ -185,7 +188,7 @@ func resolveShowID(st *store.Store, ref string) (string, error) {
 
 func buildShow(st *store.Store, t *Ticket, opts ShowOptions, full bool) (*ShowView, error) {
 	v := &ShowView{
-		ID: t.ID, TicketRoot: st.Root, Path: t.TaskRelPath,
+		ID: t.ID, Archived: t.Archived, TicketRoot: st.Root, Path: t.TaskRelPath,
 		Title: t.Title, State: t.State, Priority: t.Priority,
 		Tags: t.Tags, DependsOn: t.DependsOn,
 	}
@@ -281,7 +284,11 @@ func buildShow(st *store.Store, t *Ticket, opts ShowOptions, full bool) (*ShowVi
 // one. Lstat deliberately does not inspect symlink targets; the harness owns
 // the policy for following them.
 func attachmentPath(st *store.Store, id string) string {
-	path := filepath.Join(st.Root, id, "attachments")
+	dir, err := st.TicketDirRelPath(id)
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(st.Root, filepath.FromSlash(dir), "attachments")
 	info, err := os.Lstat(path)
 	if err == nil && (info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 		return path
@@ -384,7 +391,7 @@ func Path(st *store.Store, ref string, absolute bool) (map[string]string, error)
 	rel := t.TaskRelPath
 	p := rel
 	if absolute {
-		p = filepath.Join(st.Root, rel)
+		p = filepath.Join(st.Root, filepath.FromSlash(rel))
 	}
 	return map[string]string{"id": full, "path": p}, nil
 }

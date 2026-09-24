@@ -73,6 +73,64 @@ func TestGraphMutationRejectsDirectAndTransitiveCycles(t *testing.T) {
 	}
 }
 
+func TestGraphMutationRejectsCombinedReadinessCycles(t *testing.T) {
+	e := newEnv(t, 9407)
+	parent := e.create(t, "parent", CreateOptions{})
+	child := e.create(t, "child", CreateOptions{Parent: parent})
+	childPath := filepath.Join(e.base, "tickets", child, "TASK.md")
+	before, err := os.ReadFile(childPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(e.st, child, UpdateOptions{Set: map[string]any{"depends_on": []any{parent}}}); err == nil {
+		t.Fatal("direct combined readiness cycle accepted")
+	} else if got := contractCode(t, err); got != contract.ErrReadinessCycle {
+		t.Fatalf("error=%s want readiness_cycle", got)
+	}
+	after, err := os.ReadFile(childPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("rejected combined cycle changed bytes")
+	}
+
+	first := e.create(t, "first", CreateOptions{})
+	second := e.create(t, "second", CreateOptions{Parent: first})
+	third := e.create(t, "third", CreateOptions{Parent: second})
+	thirdPath := filepath.Join(e.base, "tickets", third, "TASK.md")
+	before, err = os.ReadFile(thirdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(e.st, third, UpdateOptions{Set: map[string]any{"depends_on": []any{first}}}); err == nil {
+		t.Fatal("transitive combined readiness cycle accepted")
+	} else if got := contractCode(t, err); got != contract.ErrReadinessCycle {
+		t.Fatalf("error=%s want readiness_cycle", got)
+	}
+	after, err = os.ReadFile(thirdPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("rejected transitive combined cycle changed bytes")
+	}
+}
+
+func TestValidateGraphsDiagnosesPersistedCombinedReadinessCycle(t *testing.T) {
+	e := newEnv(t, 9408)
+	parent := e.create(t, "parent", CreateOptions{})
+	child := e.create(t, "child", CreateOptions{Parent: parent})
+	insertTaskFMLine(t, e.base, child, "depends_on: ["+parent+"]\n")
+	if err := ValidateGraphs(e.st); err == nil || contractCode(t, err) != contract.ErrReadinessCycle {
+		t.Fatalf("persisted combined cycle diagnosis: %v", err)
+	}
+}
+
+func TestValidateGraphsDiagnosesDuplicateDependencies(t *testing.T) {
+	e := newEnv(t, 9409)
+	dependency := e.create(t, "dependency", CreateOptions{})
+	target := e.create(t, "target", CreateOptions{})
+	insertTaskFMLine(t, e.base, target, "depends_on: ["+dependency+", "+dependency+"]\n")
+	if err := ValidateGraphs(e.st); err == nil || contractCode(t, err) != contract.ErrInvalidTicket {
+		t.Fatalf("duplicate dependency was not diagnosed: %v", err)
+	}
+}
+
 func TestReadinessPrerequisiteStatesAndChildren(t *testing.T) {
 	e := newEnv(t, 9402)
 	dep := e.create(t, "dependency", CreateOptions{Sections: map[string]string{"objective": "dependency"}})
@@ -164,8 +222,7 @@ func TestReadinessPrerequisiteStatesAndChildren(t *testing.T) {
 }
 
 func TestReadinessRejectsMalformedMetadata(t *testing.T) {
-	e := newEnv(t, 9403)
-	e = newEnv(t, 9405)
+	e := newEnv(t, 9405)
 	target := e.create(t, "target", CreateOptions{Sections: map[string]string{"objective": "t", "acceptance": "t"}})
 	bad := e.create(t, "bad", CreateOptions{})
 	badPath := filepath.Join(e.base, "tickets", bad, "TASK.md")
@@ -421,18 +478,36 @@ func TestNextUsesReadyOrderingAndClaim(t *testing.T) {
 	_ = blocked
 }
 
-func replaceTaskLine(t *testing.T, base, id, old, new string) {
-	t.Helper()
-	p := filepath.Join(base, "tickets", id, "TASK.md")
-	b, err := os.ReadFile(p)
-	if err != nil {
+func TestNextWithoutTagFiltersSelectionAndClaim(t *testing.T) {
+	e := newEnv(t, 9421)
+	excluded := e.create(t, "excluded", CreateOptions{Priority: 0, Tags: []string{"skip"}, Sections: map[string]string{"objective": "excluded"}})
+	allowed := e.create(t, "allowed", CreateOptions{Priority: 1, Tags: []string{"keep"}, Sections: map[string]string{"objective": "allowed"}})
+
+	selected, err := NextWithOptions(e.st, NextOptions{Queue: "open", WithoutTags: []string{"skip", "skip"}})
+	if err != nil || selected.Item == nil || selected.Item.ID != allowed {
+		t.Fatalf("filtered open selection: %+v (%v)", selected, err)
+	}
+	claimed, err := NextWithOptions(e.st, NextOptions{Queue: "open", WithoutTags: []string{"skip"}, Claim: true, Actor: "agent"})
+	if err != nil || claimed.Item == nil || claimed.Item.ID != allowed || claimed.Item.Assignee == nil || *claimed.Item.Assignee != "agent" {
+		t.Fatalf("filtered open claim: %+v (%v)", claimed, err)
+	}
+	empty, err := NextWithOptions(e.st, NextOptions{Queue: "open", WithoutTags: []string{"skip"}})
+	if err != nil || empty.Item != nil {
+		t.Fatalf("excluded-only open queue was not empty: %+v (%v)", empty, err)
+	}
+	_ = excluded
+
+	reviewExcluded := e.create(t, "review excluded", CreateOptions{Tags: []string{"skip"}, Sections: map[string]string{"objective": "review excluded"}})
+	reviewAllowed := e.create(t, "review allowed", CreateOptions{Tags: []string{"keep"}, Sections: map[string]string{"objective": "review allowed"}})
+	if _, err := Submit(e.st, reviewExcluded, SubmitOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(b, []byte(old)) {
-		t.Fatalf("%s: missing line %q", id, old)
-	}
-	if err := os.WriteFile(p, bytes.Replace(b, []byte(old), []byte(new), 1), 0o644); err != nil {
+	if _, err := Submit(e.st, reviewAllowed, SubmitOptions{}); err != nil {
 		t.Fatal(err)
+	}
+	review, err := NextWithOptions(e.st, NextOptions{Queue: "review", WithoutTags: []string{"skip", "skip"}})
+	if err != nil || review.Item == nil || review.Item.ID != reviewAllowed {
+		t.Fatalf("filtered review selection: %+v (%v)", review, err)
 	}
 }
 

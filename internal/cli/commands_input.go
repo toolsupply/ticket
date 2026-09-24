@@ -32,23 +32,10 @@ func decodeInput(input io.Reader, path string, out any) error {
 }
 
 func readInputData(input io.Reader, path string) ([]byte, error) {
-	if path != "-" {
-		return nil, contract.NewError(contract.ErrInvalidArgument,
-			"Structured input must be provided with --input -.", nil)
-	}
-	data, err := readStdin(input, 2<<20)
-	if err != nil {
-		return nil, contract.NewError(contract.ErrFileTooLarge,
-			"Input could not be read: "+err.Error(), nil)
-	}
-	if len(data) > 2<<20 {
-		return nil, contract.NewError(contract.ErrFileTooLarge,
-			"Input exceeds the 2 MiB limit.", nil)
-	}
-	return data, nil
+	return readSource(input, path, maxInvocationInputBytes)
 }
 
 func sessionStdinError(command string) error {
 	return contract.NewError(contract.ErrInvalidArgument,
-		"Command "+command+" cannot read structured input from stdin inside an interactive session; supply invocation input explicitly.", nil)
+		"Command "+command+" cannot consume input from the session stream; provide its input explicitly.", nil)
 }

@@ -74,8 +74,8 @@ func TestVersionCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &v); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if v.APIVersion != 1 || v.StorageVersion != 1 {
-		t.Fatalf("version = %+v, want api_version 1 storage_version 1", v)
+	if v.APIVersion != 2 || v.StorageVersion != 1 {
+		t.Fatalf("version = %+v, want api_version 2 storage_version 1", v)
 	}
 	if v.Version == "" {
 		t.Fatal("empty version string")

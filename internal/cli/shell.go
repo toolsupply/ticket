@@ -84,10 +84,6 @@ func runInteractiveIO(args []string, out io.Writer, stdin io.Reader, stderr io.W
 	return interactiveLoopWithStdin(executor, reader, out, stderr, input)
 }
 
-func setInteractiveTitle(executor *sessionExecutor) {
-	setInteractiveTerminalTitle(interactiveTerminalTitle(executor))
-}
-
 func interactiveTerminalTitle(executor *sessionExecutor) string {
 	if executor.state.current == "" {
 		return "ticket : idle"
@@ -190,13 +186,6 @@ func interactiveSeedReference(root string) (string, string, bool) {
 		return "", ".local/current", true
 	}
 	return strings.TrimSpace(string(data)), ".local/current", true
-}
-
-func interactiveLoop(executor *sessionExecutor, input *bufio.Reader, out, stderr io.Writer) int {
-	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt)
-	defer signal.Stop(interrupts)
-	return interactiveLoopWithStdinAndInterrupts(executor, input, out, stderr, os.Stdin, interrupts)
 }
 
 func interactiveLoopWithInterrupts(executor *sessionExecutor, input *bufio.Reader, out, stderr io.Writer, interrupts <-chan os.Signal) int {

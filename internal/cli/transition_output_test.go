@@ -35,7 +35,7 @@ func TestBatchTransitionHumanOutputIdentifiesEachTicket(t *testing.T) {
 	second := exactlyOneJSONObject(t, mustCLI(t, "create", "Second transition", "Complete second."))["id"].(string)
 
 	out, code := runCLIHuman(t, "close", "all")
-	if code != 0 || !strings.Contains(out, first+": open -> completed") || !strings.Contains(out, second+": open -> completed") {
+	if code != 0 || !strings.Contains(out, first+": open -> closed") || !strings.Contains(out, second+": open -> closed") {
 		t.Fatalf("batch transition output: exit=%d output=%q", code, out)
 	}
 }

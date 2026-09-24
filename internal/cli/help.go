@@ -23,7 +23,9 @@ Getting started:
 
 Finding work:
   list       List tickets
+  query      Select tickets with TQL
   grep       Find tickets by text or regular expression
+  graph      Explore dependency relationships
   ready      Inspect eligible work
   next       Select the next eligible ticket
   wait       Wait for eligible work
@@ -35,15 +37,17 @@ Working on tickets:
   claim      Claim available work
   edit       Edit a ticket in your editor
   update     Update a ticket
+  append     Append Markdown to a ticket Objective
   bump       Raise a ticket's priority
   release    Release ownership
+  reassign   Transfer ownership atomically
   actor      Show the effective actor identity
 
 Lifecycle:
   open       Make a ticket active
   hold       Pause active work
   review     Send a ticket to review
-  close      Mark a ticket completed
+  close      Mark a ticket closed
   reject     Abandon or decline a ticket
   state      Force a lifecycle state
 
@@ -54,6 +58,8 @@ Review:
 
 Maintenance:
   delete     Permanently delete tickets
+  archive    Move closed or rejected tickets out of the active queue
+  unarchive  Return an archived ticket to the active queue
   check      Validate the repository
 
 Run 'ticket help <command>' or 'ticket <command> -h' for command-specific help.
@@ -139,7 +145,7 @@ func orderedHelpOptions(options []contract.Flag) []contract.Flag {
 
 func commandHasNoActor(name string) bool {
 	switch name {
-	case "init", "create", "delete", "list", "grep", "ready", "show", "status", "path", "state", "check", "version", "actor", "info", "help", "watch":
+	case "init", "create", "delete", "archive", "unarchive", "list", "grep", "graph", "ready", "show", "status", "path", "state", "check", "version", "actor", "info", "help", "watch":
 		return true
 	default:
 		return false
@@ -180,33 +186,39 @@ func emitHelpCommand(ctx *commandContext, name string) error {
 
 func commandUsage(name string) string {
 	operands := map[string]string{
-		"create":  "TITLE [OBJECTIVE]",
-		"delete":  "ID...",
-		"bump":    "[ID]",
-		"list":    "[STATE...|ID...]",
-		"grep":    "EXPRESSION...",
-		"info":    "",
-		"ready":   "[open|review]",
-		"next":    "[open|review]",
-		"wait":    "[open|review]",
-		"watch":   "",
-		"show":    "[ID]",
-		"actor":   "",
-		"edit":    "[ID]",
-		"submit":  "[ID]",
-		"hold":    "[ID]",
-		"review":  "[ID]",
-		"open":    "[ID] [HANDOFF]",
-		"state":   "ID STATE",
-		"status":  "[ID]",
-		"path":    "[ID]",
-		"update":  "[ID]",
-		"claim":   "[ID]",
-		"release": "[ID]",
-		"close":   "[ID...|STATE...|all]",
-		"approve": "[ID...|review|all]",
-		"reject":  "[ID] [OUTCOME]",
-		"help":    "[COMMAND]",
+		"create":    "TITLE [OBJECTIVE|-]",
+		"delete":    "ID...",
+		"archive":   "[ID]",
+		"unarchive": "[ID]",
+		"bump":      "[ID]",
+		"list":      "[STATE...|ID...]",
+		"query":     "[TQL...] [:: CONSUMER [OPTIONS...]]",
+		"grep":      "EXPRESSION...",
+		"graph":     "[ID]",
+		"info":      "",
+		"ready":     "[open|review]",
+		"next":      "[open|review]",
+		"wait":      "[open|review]",
+		"watch":     "",
+		"show":      "[ID]",
+		"actor":     "",
+		"edit":      "[ID]",
+		"submit":    "[ID]",
+		"hold":      "[ID]",
+		"review":    "[ID]",
+		"open":      "[ID] [HANDOFF]",
+		"state":     "ID STATE",
+		"status":    "[ID]",
+		"path":      "[ID]",
+		"update":    "[ID]",
+		"append":    "ID [OBJECTIVE_FILE|-]",
+		"claim":     "[ID]",
+		"release":   "[ID]",
+		"reassign":  "ID ASSIGNEE",
+		"close":     "[ID...|STATE...|all]",
+		"approve":   "[ID...|review|all]",
+		"reject":    "[ID] [OUTCOME]",
+		"help":      "[COMMAND]",
 	}
 	if name == "options" {
 		return "ticket help options"
@@ -267,7 +279,7 @@ func emitTopLevelVersion(ctx *commandContext) error {
 }
 
 func cmdHelp(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

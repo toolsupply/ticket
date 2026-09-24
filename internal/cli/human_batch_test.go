@@ -25,7 +25,7 @@ func TestHumanCloseAllUsesPastTense(t *testing.T) {
 		t.Fatalf("close all: exit=%d out=%q", code, out)
 	}
 	for _, id := range ids {
-		if !strings.Contains(out, id+": hold -> completed") {
+		if !strings.Contains(out, id+": hold -> closed") {
 			t.Fatalf("close all transition output: %q", out)
 		}
 	}

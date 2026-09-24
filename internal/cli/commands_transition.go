@@ -16,17 +16,20 @@ type transitionInput struct {
 }
 
 func cmdApprove(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
 	var message string
 	var messageSet bool
 	var states []string
+	var queryTokens []string
+	var querySet bool
 	p.flag("message", kindString, func(value string) error { message, messageSet = value, true; return nil }, false)
 	p.alias("m", "message")
 	p.repeat("state", &states)
 	p.alias("s", "state")
+	registerQueryTail(p, &queryTokens, &querySet)
 	if err := p.parse(args); err != nil {
 		return err
 	}
@@ -36,10 +39,17 @@ func cmdApprove(ctx *commandContext, args []string) error {
 	if err := ctx.check(); err != nil {
 		return err
 	}
-	selectors := append(append([]string{}, p.positionals...), states...)
+	selectors := append(append([]string{}, targetTokens(p.positionals)...), states...)
+	prepared, err := prepareTargetSpec(selectors, queryTokens, querySet, targetSpecOptions{AllowLegacyStates: true, AllowLegacyAll: true})
+	if err != nil {
+		return err
+	}
+	if prepared.HasQuery && len(states) > 0 {
+		return ambiguousTargetError()
+	}
 	ref := ""
-	if len(selectors) == 1 && len(states) == 0 && p.positionals[0] != "all" {
-		ref = p.positionals[0]
+	if !prepared.HasQuery && len(selectors) == 1 && len(states) == 0 && selectors[0] != "all" {
+		ref = selectors[0]
 	}
 	actor := ctx.actor
 	if actor == "" {
@@ -49,6 +59,13 @@ func cmdApprove(ctx *commandContext, args []string) error {
 		var messagePtr *string
 		if messageSet {
 			messagePtr = &message
+		}
+		if prepared.HasQuery {
+			set, err := domain.EvaluateTarget(st, prepared.Target)
+			if err != nil {
+				return nil, err
+			}
+			return domain.ApproveMany(st, set.IDs(), domain.ReviewOptions{Actor: actor, Message: messagePtr})
 		}
 		targets, stateBatch, selectAll, err := transitionTargets(st, selectors, "approve")
 		if err != nil {
@@ -78,7 +95,7 @@ func cmdReject(ctx *commandContext, args []string) error {
 }
 
 func cmdClose(ctx *commandContext, args []string, command string, run func(*store.Store, string, transitionInput, string) (any, error)) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -88,6 +105,8 @@ func cmdClose(ctx *commandContext, args []string, command string, run func(*stor
 	var messageSet bool
 	var states []string
 	var all bool
+	var queryTokens []string
+	var querySet bool
 	p.flag("outcome", kindString, func(v string) error { outcome = v; outcomeSet = true; return nil }, false)
 	p.flag("message", kindString, func(v string) error { message = v; messageSet = true; return nil }, false)
 	p.alias("m", "message")
@@ -97,6 +116,7 @@ func cmdClose(ctx *commandContext, args []string, command string, run func(*stor
 		p.alias("s", "state")
 		p.boolValue("all", &all)
 		p.alias("a", "all")
+		registerQueryTail(p, &queryTokens, &querySet)
 	}
 	if err := p.parse(args); err != nil {
 		return err
@@ -149,10 +169,25 @@ func cmdClose(ctx *commandContext, args []string, command string, run func(*stor
 			positionals = positionals[:1]
 		}
 	}
-	selectors := append(append([]string{}, positionals...), states...)
-	refs, all, err := closeTargets(selectors, all, command)
+	selectors := append(append([]string{}, targetTokens(positionals)...), states...)
+	var refs []string
+	prepared, err := prepareTargetSpec(selectors, queryTokens, querySet, targetSpecOptions{AllowLegacyStates: command == "close", AllowLegacyAll: command == "close"})
 	if err != nil {
 		return err
+	}
+	if prepared.HasQuery {
+		if command != "close" {
+			return contract.NewError(contract.ErrInvalidArgument, "Command "+command+" does not accept TQL targets.", nil)
+		}
+		if all || len(states) > 0 {
+			return ambiguousTargetError()
+		}
+	} else {
+		var targetErr error
+		refs, all, targetErr = closeTargets(selectors, all, command)
+		if targetErr != nil {
+			return targetErr
+		}
 	}
 	if command == "reject" && len(refs) > 1 {
 		return contract.NewError(contract.ErrInvalidArgument,
@@ -179,6 +214,13 @@ func cmdClose(ctx *commandContext, args []string, command string, run func(*stor
 	return runRepoCommand(ctx, command, func(st *store.Store) (any, error) {
 		if command == "close" {
 			opts := domain.CloseOptions{Outcome: valueOrEmpty(in.Outcome), Actor: actor, Message: in.Message}
+			if prepared.HasQuery {
+				set, err := domain.EvaluateTarget(st, prepared.Target)
+				if err != nil {
+					return nil, err
+				}
+				return domain.CloseMany(st, set.IDs(), opts)
+			}
 			targets, stateBatch, selectAll, targetErr := transitionTargets(st, selectors, command)
 			if targetErr != nil {
 				return nil, targetErr
@@ -262,19 +304,18 @@ func transitionTargets(st *store.Store, positionals []string, command string) ([
 			return nil, false, false, contract.NewError(contract.ErrInvalidArgument,
 				"Approve accepts only the review state as a state selector.", nil)
 		}
-		if command == "close" && (part == "completed" || part == "rejected") {
+		if command == "close" && (part == "closed" || part == "completed" || part == "rejected") {
 			return nil, false, false, contract.NewError(contract.ErrInvalidArgument,
 				"Close accepts only nonterminal states as state selectors.", nil)
 		}
-		listed, err := domain.List(st, domain.ListOptions{
-			States: []string{part}, Unlimited: true, Fields: []string{"id"},
+		set, err := domain.EvaluateQuery(st, domain.QuerySpec{
+			Expr:  domain.Field("state", part),
+			Scope: domain.ScopeActive,
 		})
 		if err != nil {
 			return nil, false, false, err
 		}
-		for _, item := range listed.Items {
-			targets = append(targets, item.ID)
-		}
+		targets = append(targets, set.IDs()...)
 		stateBatch = true
 	}
 	return targets, stateBatch || len(targets) > 1, selectAll, nil
@@ -282,7 +323,7 @@ func transitionTargets(st *store.Store, positionals []string, command string) ([
 
 func isTicketState(value string) bool {
 	switch value {
-	case "open", "hold", "review", "signoff", "completed", "rejected", "all":
+	case "open", "hold", "review", "signoff", "closed", "completed", "rejected", "all":
 		return true
 	default:
 		return false

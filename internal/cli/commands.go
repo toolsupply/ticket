@@ -1,4 +1,4 @@
-// Command dispatch: every v1 command maps to one success object or one
+// Command dispatch: every API 2 command maps to one success object or one
 // error object.
 package cli
 
@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/toolsupply/ticket/internal/contract"
@@ -49,7 +50,18 @@ func (g *globalOpts) registerWithoutActor(p *parser) {
 
 func (g *globalOpts) registerJSON(p *parser) {
 	if !g.machineTransport {
-		p.boolValue("json", &g.json)
+		p.flag("json", kindBool, func(value string) error {
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return contract.NewError(contract.ErrInvalidArgument,
+					"Flag --json is a boolean flag.", nil)
+			}
+			// JSON is invocation transport, not consumer presentation state.
+			// Once established by any side of a composition, false-valued
+			// consumer flags cannot downgrade it.
+			g.json = g.json || enabled
+			return nil
+		}, false)
 		return
 	}
 	p.flag("json", kindBool, func(value string) error {
@@ -129,16 +141,26 @@ func (g *globalOpts) effectiveActor() (actor, source string) {
 
 // commandContext carries the invocation through one command.
 type commandContext struct {
-	stdout        *bytes.Buffer
-	cwd           string
-	input         io.Reader
-	inputProvided bool
-	markdown      bool
-	session       *sessionState
-	executor      *sessionExecutor
-	done          <-chan struct{}
-	liveWriter    io.Writer
+	stdout         *bytes.Buffer
+	cwd            string
+	input          io.Reader
+	inputProvided  bool
+	markdown       bool
+	session        *sessionState
+	executor       *sessionExecutor
+	done           <-chan struct{}
+	liveWriter     io.Writer
+	metadataOnly   bool
+	metadataParser *parser
 	globalOpts
+}
+
+func (ctx *commandContext) newParser() *parser {
+	p := &parser{metadataOnly: ctx.metadataOnly}
+	if ctx.metadataOnly {
+		ctx.metadataParser = p
+	}
+	return p
 }
 
 func (ctx *commandContext) check() error {
@@ -188,7 +210,9 @@ func runRepoCommandMode(ctx *commandContext, cmd string, mutation bool, fn func(
 		if err := persistMutation(backend, st, cmd, res); err != nil {
 			return err
 		}
-		_ = st.SignalChange()
+		if resultChanged(res) {
+			_ = st.SignalChange()
+		}
 	}
 	normalizeShowPaths(ctx, res)
 	rememberCurrentTicket(ctx, st, res)
@@ -295,6 +319,18 @@ func mutationPaths(result any) []string {
 		if value.Changed {
 			return []string{value.ID}
 		}
+	case *domain.ArchiveResult:
+		if value.Changed {
+			return []string{value.FromPath, value.ToPath}
+		}
+	case *domain.BatchArchiveResult:
+		paths := make([]string, 0, len(value.Items)*2)
+		for _, item := range value.Items {
+			if item.Changed {
+				paths = append(paths, item.FromPath, item.ToPath)
+			}
+		}
+		return paths
 	case *domain.BatchDeleteResult:
 		ids := make([]string, 0, len(value.Items))
 		for _, item := range value.Items {
@@ -310,6 +346,8 @@ func mutationPaths(result any) []string {
 	case *domain.ClaimResult:
 		return []string{ticketTaskPath(value.ID)}
 	case *domain.ReleaseResult:
+		return []string{ticketTaskPath(value.ID)}
+	case *domain.ReassignResult:
 		return []string{ticketTaskPath(value.ID)}
 	case *domain.TransitionResult:
 		return []string{ticketTaskPath(value.ID)}
@@ -359,6 +397,14 @@ func resultChanged(result any) bool {
 		return value.Changed
 	case *domain.DeleteResult:
 		return value.Changed
+	case *domain.ArchiveResult:
+		return value.Changed
+	case *domain.BatchArchiveResult:
+		for _, item := range value.Items {
+			if item.Changed {
+				return true
+			}
+		}
 	case *domain.BatchDeleteResult:
 		for _, item := range value.Items {
 			if item.Changed {
@@ -372,6 +418,8 @@ func resultChanged(result any) bool {
 	case *domain.ClaimResult:
 		return value.Changed
 	case *domain.ReleaseResult:
+		return value.Changed
+	case *domain.ReassignResult:
 		return value.Changed
 	case *domain.TransitionResult:
 		return value.Changed
@@ -426,6 +474,12 @@ func resultID(result any) string {
 		return value.ID
 	case *domain.DeleteResult:
 		return value.ID
+	case *domain.ArchiveResult:
+		return value.ID
+	case *domain.BatchArchiveResult:
+		if len(value.Items) > 0 {
+			return value.Items[0].ID
+		}
 	case *domain.BatchDeleteResult:
 		if len(value.Items) > 0 {
 			return value.Items[0].ID
@@ -437,6 +491,8 @@ func resultID(result any) string {
 	case *domain.ClaimResult:
 		return value.ID
 	case *domain.ReleaseResult:
+		return value.ID
+	case *domain.ReassignResult:
 		return value.ID
 	case *domain.TransitionResult:
 		return value.ID
@@ -563,6 +619,8 @@ func currentTicketID(result any) string {
 	case *domain.ClaimResult:
 		id = value.ID
 	case *domain.ReleaseResult:
+		id = value.ID
+	case *domain.ReassignResult:
 		id = value.ID
 	case *domain.TransitionResult:
 		id = value.ID

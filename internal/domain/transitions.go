@@ -109,12 +109,15 @@ func prepareClose(st *store.Store, id string, opts CloseOptions) (*preparedTrans
 	if err != nil {
 		return nil, err
 	}
+	if err := EnsureActive(st, full); err != nil {
+		return nil, err
+	}
 	t, err := ReadTicket(st, full)
 	if err != nil {
 		return nil, err
 	}
-	if t.State == "completed" {
-		return &preparedTransition{result: TransitionResult{ID: full, FromState: "completed", State: "completed"}}, nil
+	if t.State == StateClosed {
+		return &preparedTransition{result: TransitionResult{ID: full, FromState: StateClosed, State: StateClosed}}, nil
 	}
 	if t.State == "rejected" {
 		return nil, contract.NewError(contract.ErrInvalidTransition, "Rejected tickets cannot be closed.", nil)
@@ -128,9 +131,9 @@ func prepareClose(st *store.Store, id string, opts CloseOptions) (*preparedTrans
 		return nil, err
 	}
 	fromState := t.State
-	t.State = "completed"
+	t.State = StateClosed
 	t.Assignee = ""
-	return prepareTransition(t, newBody, fromState, "completed")
+	return prepareTransition(t, newBody, fromState, StateClosed)
 }
 
 // CloseMany closes the supplied tickets in deterministic ID order. All
@@ -207,6 +210,9 @@ func Reject(st *store.Store, id string, opts RejectOptions) (*TransitionResult, 
 	if err != nil {
 		return nil, err
 	}
+	if err := EnsureActive(st, full); err != nil {
+		return nil, err
+	}
 	t, err := ReadTicket(st, full)
 	if err != nil {
 		return nil, err
@@ -265,12 +271,17 @@ func SetState(st *store.Store, id, state string, opts StateOptions) (*Transition
 }
 
 func setState(st *store.Store, id, state string, opts StateOptions, enforceOwnership bool) (*TransitionResult, error) {
-	if !validLifecycleState(state) {
+	normalized, valid := NormalizeLifecycleState(state)
+	if !valid {
 		return nil, contract.NewError(contract.ErrInvalidArgument,
-			"State must be open, hold, review, signoff, completed, or rejected.", nil)
+			"State must be open, hold, review, signoff, closed, or rejected.", nil)
 	}
+	state = normalized
 	full, err := mustResolve(st, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := EnsureActive(st, full); err != nil {
 		return nil, err
 	}
 	t, err := ReadTicket(st, full)
@@ -310,6 +321,9 @@ func Approve(st *store.Store, id string, opts ReviewOptions) (*TransitionResult,
 func prepareApprove(st *store.Store, id string, opts ReviewOptions) (*preparedTransition, error) {
 	full, err := mustResolve(st, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := EnsureActive(st, full); err != nil {
 		return nil, err
 	}
 	t, err := ReadTicket(st, full)
@@ -406,6 +420,9 @@ func Open(st *store.Store, id string, opts OpenOptions) (*TransitionResult, erro
 	if err != nil {
 		return nil, err
 	}
+	if err := EnsureActive(st, full); err != nil {
+		return nil, err
+	}
 	t, err := ReadTicket(st, full)
 	if err != nil {
 		return nil, err
@@ -422,6 +439,9 @@ func Open(st *store.Store, id string, opts OpenOptions) (*TransitionResult, erro
 		candidate := *t
 		candidate.State = "open"
 		candidate.Assignee = ""
+		if err := validateActivatedGraph(st, &candidate, t.State); err != nil {
+			return nil, err
+		}
 		tickets, err := loadGraph(st)
 		if err != nil {
 			return nil, err
@@ -477,6 +497,9 @@ func moveAssignedAny(st *store.Store, id, actor string, handoff, message *string
 	if err != nil {
 		return nil, err
 	}
+	if err := EnsureActive(st, full); err != nil {
+		return nil, err
+	}
 	t, err := ReadTicket(st, full)
 	if err != nil {
 		return nil, err
@@ -528,15 +551,6 @@ func transitionBody(t *Ticket, sections map[string]string, message *string, acto
 		return t.Body, nil
 	}
 	return applyBodyChanges(t, UpdateOptions{Sections: sections, allowWorkLog: true}, map[string]bool{})
-}
-
-func validLifecycleState(state string) bool {
-	switch state {
-	case "open", "hold", "review", "signoff", "completed", "rejected":
-		return true
-	default:
-		return false
-	}
 }
 
 // uniqueWorkLogSection returns the parsed Work log range. The ordinary ticket
@@ -593,6 +607,9 @@ func workLogContent(t *Ticket, section *markdown.Section, message, actor string)
 }
 
 func publishTransition(st *store.Store, t *Ticket, newBody []byte, fromState, state string) (*TransitionResult, error) {
+	if err := validateActivatedGraph(st, t, fromState); err != nil {
+		return nil, err
+	}
 	changed := map[string]bool{"state": true, "assignee": true}
 	data, err := renderUpdated(t, newBody, changed)
 	if err != nil {

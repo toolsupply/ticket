@@ -2,9 +2,7 @@ package domain
 
 import (
 	"bytes"
-	"encoding/json"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/toolsupply/ticket/internal/contract"
@@ -26,21 +24,18 @@ func init() {
 	}
 }
 
-// canonicalFieldOrder is the metadata canonical order used when
-// inserting fields that were not present in the document.
-var canonicalFieldOrder = []string{
-	"state", "priority", "tags", "parent", "depends_on", "assignee", "blocked_reason",
-}
-
 // UpdateOptions is one update of a ticket.
 type UpdateOptions struct {
 	// Set maps field names to new values; a null value clears an optional
 	// field; absent keys are untouched.
 	Set map[string]any
 	// Sections maps known section keys to complete replacement content.
-	Sections     map[string]string
-	Actor        string
-	allowWorkLog bool
+	Sections map[string]string
+	// AppendSections maps known section keys to content appended atomically
+	// under the same ownership and replacement path as Sections.
+	AppendSections map[string]string
+	Actor          string
+	allowWorkLog   bool
 }
 
 // UpdateResult reports an update.
@@ -54,6 +49,9 @@ type UpdateResult struct {
 func Update(st *store.Store, id string, opts UpdateOptions) (*UpdateResult, error) {
 	full, err := mustResolve(st, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := EnsureActive(st, full); err != nil {
 		return nil, err
 	}
 	t, err := ReadTicket(st, full)
@@ -137,6 +135,16 @@ func validateUpdateSet(opts UpdateOptions) error {
 		if !setAllowlist[key] {
 			return contract.NewError(contract.ErrInvalidArgument,
 				"Unknown set key "+key+". Allowed: "+strings.Join(setFieldOrder, ", ")+".", nil)
+		}
+	}
+	for key := range opts.AppendSections {
+		if key != "objective" {
+			return contract.NewError(contract.ErrInvalidArgument,
+				"Unknown append section key "+key+". Allowed: objective.", nil)
+		}
+		if _, replacing := opts.Sections[key]; replacing {
+			return contract.NewError(contract.ErrInvalidArgument,
+				"Section "+key+" cannot be replaced and appended in the same update.", nil)
 		}
 	}
 	return nil
@@ -314,12 +322,20 @@ func applyBodyChanges(t *Ticket, opts UpdateOptions, secChanged map[string]bool)
 	for i, ks := range markdown.KnownSections {
 		secIdx[ks.Key] = i
 	}
-	keys := make([]string, 0, len(opts.Sections))
+	keys := make([]string, 0, len(opts.Sections)+len(opts.AppendSections))
 	for key := range opts.Sections {
 		keys = append(keys, key)
 	}
+	for key := range opts.AppendSections {
+		keys = append(keys, key)
+	}
+	seenKeys := make(map[string]bool, len(keys))
 	sort.Slice(keys, func(i, j int) bool { return secIdx[keys[i]] < secIdx[keys[j]] })
 	for _, key := range keys {
+		if seenKeys[key] {
+			continue
+		}
+		seenKeys[key] = true
 		content := opts.Sections[key]
 		if !knownSectionKey(key) {
 			return nil, contract.NewError(contract.ErrInvalidArgument,
@@ -332,6 +348,26 @@ func applyBodyChanges(t *Ticket, opts UpdateOptions, secChanged map[string]bool)
 		norm, err := ValidateSectionContent(key, content)
 		if err != nil {
 			return nil, err
+		}
+		if appendContent, appending := opts.AppendSections[key]; appending {
+			if strings.TrimSpace(appendContent) == "" {
+				return nil, contract.NewError(contract.ErrInvalidArgument,
+					"Cannot append empty Objective content.", nil)
+			}
+			appended, err := ValidateSectionContent(key, appendContent)
+			if err != nil {
+				return nil, err
+			}
+			if current, ok := t.Sections[key]; ok {
+				currentText := strings.TrimRight(current.Content(body), "\r\n")
+				if strings.TrimSpace(currentText) == "" {
+					norm = appended
+				} else {
+					norm = currentText + eol + eol + strings.TrimRight(appended, "\r\n") + eol
+				}
+			} else {
+				norm = appended
+			}
 		}
 		norm = toEOL(norm, eol)
 		if s, ok := t.Sections[key]; ok {
@@ -556,96 +592,6 @@ func renderVisibleMetadata(t *Ticket, eol string) string {
 		}
 	}
 	return strings.ReplaceAll(b.String(), "\n", eol)
-}
-
-func canonicalLine(t *Ticket, key string, value any, eol string) (line string, removed bool) {
-	switch key {
-	case "priority":
-		n, _ := toInt(value)
-		if n == 2 {
-			return "", true
-		}
-		return "priority: " + strconv.Itoa(int(n)), false
-	case "tags":
-		s, _ := value.([]string)
-		if len(s) == 0 {
-			return "", true
-		}
-		return "tags: [" + joinQuoted(s) + "]", false
-	case "depends_on":
-		s, _ := value.([]string)
-		if len(s) == 0 {
-			return "", true
-		}
-		return "depends_on: [" + joinQuoted(s) + "]", false
-	case "parent":
-		s, _ := value.(string)
-		if s == "" {
-			return "", true
-		}
-		return "parent: " + quoteMetaString(s), false
-	case "blocked_reason":
-		s, _ := value.(string)
-		if s == "" {
-			return "", true
-		}
-		return "blocked_reason: " + quoteMetaString(s), false
-	case "assignee":
-		s, _ := value.(string)
-		if s == "" {
-			return "", true
-		}
-		return "assignee: " + quoteMetaString(s), false
-	case "state":
-		s, _ := value.(string)
-		if s == "" {
-			return "", true
-		}
-		return "state: " + s, false
-	}
-	return "", true
-}
-
-func quoteMetaString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-func joinQuoted(s []string) string {
-	q := make([]string, len(s))
-	for i, v := range s {
-		q[i] = quoteMetaString(v)
-	}
-	return strings.Join(q, ", ")
-}
-
-func fieldValue(t *Ticket, key string) (any, bool) {
-	switch key {
-	case "priority":
-		return t.Priority, true
-	case "tags":
-		return t.Tags, true
-	case "depends_on":
-		return t.DependsOn, true
-	case "parent":
-		return t.Parent, true
-	case "blocked_reason":
-		return t.BlockedReason, true
-	case "assignee":
-		return t.Assignee, true
-	case "state":
-		return t.State, true
-	}
-	return nil, false
-}
-
-func canonicalRank(key string) int {
-	for i, k := range canonicalFieldOrder {
-		if k == key {
-			return i
-		}
-	}
-	return len(canonicalFieldOrder)
 }
 
 func sameStringSlice(a, b []string) bool {

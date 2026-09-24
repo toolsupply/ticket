@@ -75,6 +75,54 @@ func TestNextTagsUseANDAndRejectOwnedMismatch(t *testing.T) {
 	}
 }
 
+func TestNextWithoutTagFiltersOpenAndReviewQueues(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	excluded := exactlyOneJSONObject(t, mustCLI(t, "create", "Excluded", "Skip this work.", "--priority", "0", "--tag", "skip"))["id"].(string)
+	allowed := exactlyOneJSONObject(t, mustCLI(t, "create", "Allowed", "Take this work.", "--priority", "1", "--tag", "keep"))["id"].(string)
+
+	selected := exactlyOneJSONObject(t, mustCLI(t, "next", "--without-tag", "skip", "--without-tag", "skip"))
+	if selected["item"].(map[string]any)["id"] != allowed {
+		t.Fatalf("without-tag selection: %v", selected)
+	}
+	claimed := exactlyOneJSONObject(t, mustCLI(t, "next", "--claim", "--actor", "worker", "--without-tag", "skip"))
+	if claimed["item"].(map[string]any)["id"] != allowed || claimed["item"].(map[string]any)["assignee"] != "worker" {
+		t.Fatalf("without-tag claim: %v", claimed)
+	}
+	if out, code := runCLI(t, "next", "--claim", "--actor", "worker", "--without-tag", "keep"); code == 0 || errCode(t, out) != "conflict" {
+		t.Fatalf("owned without-tag mismatch: exit=%d out=%q", code, out)
+	}
+	empty := exactlyOneJSONObject(t, mustCLI(t, "next", "--without-tag", "skip"))
+	if empty["item"] != nil {
+		t.Fatalf("excluded open queue was not empty: %v", empty)
+	}
+	if view := exactlyOneJSONObject(t, mustCLI(t, "show", excluded)); view["assignee"] != nil {
+		t.Fatalf("excluded ticket was claimed: %v", view)
+	}
+
+	reviewExcluded := exactlyOneJSONObject(t, mustCLI(t, "create", "Review excluded", "Skip this review.", "--tag", "skip"))["id"].(string)
+	reviewAllowed := exactlyOneJSONObject(t, mustCLI(t, "create", "Review allowed", "Take this review.", "--tag", "keep"))["id"].(string)
+	for _, id := range []string{reviewExcluded, reviewAllowed} {
+		mustCLI(t, "claim", id, "--actor", "coder")
+		mustCLI(t, "submit", id, "--actor", "coder")
+	}
+	review := exactlyOneJSONObject(t, mustCLI(t, "next", "review", "--without-tag", "skip", "--without-tag", "skip"))
+	if review["item"].(map[string]any)["id"] != reviewAllowed {
+		t.Fatalf("without-tag review selection: %v", review)
+	}
+	reviewClaim := exactlyOneJSONObject(t, mustCLI(t, "next", "review", "--claim", "--actor", "reviewer", "--without-tag", "skip"))
+	if reviewClaim["item"].(map[string]any)["id"] != reviewAllowed || reviewClaim["item"].(map[string]any)["assignee"] != "reviewer" {
+		t.Fatalf("without-tag review claim: %v", reviewClaim)
+	}
+	mustCLI(t, "release", reviewAllowed, "--actor", "reviewer")
+
+	human, code := runCLIHuman(t, "next", "review", "--without-tag", "skip")
+	if code != 0 || !strings.Contains(human, reviewAllowed) || strings.Contains(human, reviewExcluded) {
+		t.Fatalf("human without-tag review: exit=%d out=%q", code, human)
+	}
+}
+
 func TestReviewQueueIgnoresImplementationReadiness(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

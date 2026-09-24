@@ -19,7 +19,7 @@ type repositoryInfo struct {
 }
 
 func cmdInfo(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

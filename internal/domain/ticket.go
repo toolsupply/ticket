@@ -40,6 +40,7 @@ func mustResolve(st *store.Store, ref string) (string, error) {
 type Ticket struct {
 	ID            string
 	TaskRelPath   string
+	Archived      bool
 	Title         string
 	State         string
 	Assignee      string
@@ -69,8 +70,24 @@ func (t *Ticket) Section(key string) (string, bool) {
 	return s.DisplayContent(t.Body), true
 }
 
+const StateClosed = "closed"
+
+// NormalizeLifecycleState returns the canonical lifecycle spelling. The
+// completed alias is accepted only at compatibility boundaries and never
+// remains in a parsed or mutated Ticket.
+func NormalizeLifecycleState(value string) (string, bool) {
+	switch value {
+	case "open", "hold", "review", "signoff", StateClosed, "rejected":
+		return value, true
+	case "completed":
+		return StateClosed, true
+	default:
+		return "", false
+	}
+}
+
 // IsTerminal reports whether the ticket is in a terminal state.
-func (t *Ticket) IsTerminal() bool { return t.State == "completed" || t.State == "rejected" }
+func (t *Ticket) IsTerminal() bool { return t.State == StateClosed || t.State == "rejected" }
 
 // ParseTicketFile parses TASK.md bytes into a Ticket. Malformed
 // structure is a contract error carrying up to 20 diagnostics.
@@ -220,10 +237,10 @@ func applyMetadata(t *Ticket, f *markdown.Metadata) {
 		switch e.Key {
 		case "state":
 			if v, ok := e.Value.(string); ok {
-				if v != "open" && v != "hold" && v != "review" && v != "signoff" && v != "completed" && v != "rejected" {
-					f.Diagnostics = append(f.Diagnostics, markdown.Diag("error", "field_value", e.Line, "state must be open, hold, review, signoff, completed, or rejected."))
+				if normalized, valid := NormalizeLifecycleState(v); !valid {
+					f.Diagnostics = append(f.Diagnostics, markdown.Diag("error", "field_value", e.Line, "state must be open, hold, review, signoff, closed, or rejected."))
 				} else {
-					t.State = v
+					t.State = normalized
 				}
 			} else {
 				f.Diagnostics = append(f.Diagnostics, markdown.Diag("error", "field_type", e.Line, "state must be a string."))
@@ -288,6 +305,14 @@ func (t *Ticket) crossField(f *markdown.Metadata) {
 	// by operations, not the parser).
 	checkIDs(f, "parent", t.Parent)
 	checkIDList(f, "depends_on", t.DependsOn)
+	seenDependencies := map[string]bool{}
+	for _, dependency := range t.DependsOn {
+		if seenDependencies[dependency] {
+			f.Diagnostics = append(f.Diagnostics, markdown.Diag("error", "duplicate_key", 0,
+				fmt.Sprintf("depends_on must be unique; duplicate %q.", dependency)))
+		}
+		seenDependencies[dependency] = true
+	}
 	seenTags := map[string]bool{}
 	for i, tag := range t.Tags {
 		trimmed := strings.TrimSpace(tag)
@@ -346,6 +371,20 @@ func normalizeTags(values []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func normalizeTagExclusions(values []string) ([]string, error) {
+	unique := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		unique = append(unique, value)
+	}
+	return normalizeTags(unique)
 }
 
 // NormalizeTags applies the ticket tag syntax and canonical ordering to

@@ -207,7 +207,7 @@ func TestJSONStreamRejectsStdinConsumersWithoutConsumingRequests(t *testing.T) {
 	input := strings.Join([]string{
 		`{"args":["create","Payload path","--input","-"]}`,
 		`{"args":["create","Trailing dash","-"]}`,
-		`{"args":["create","Stream-created","Explicit objective."]}`,
+		`{"args":["create","Stream-created"]}`,
 		`{"args":["version"]}`,
 	}, "\n") + "\n"
 
@@ -269,7 +269,7 @@ func TestJSONStreamPerRequestStdinSupportsAllForms(t *testing.T) {
 	}
 	closeInput := `{"outcome":"completed by stream"}`
 	closed := runOne([]string{"close", third, "--input", "-"}, &closeInput)
-	if closed["id"] != third || closed["state"] != "completed" {
+	if closed["id"] != third || closed["state"] != "closed" {
 		t.Fatalf("stream close: %v", closed)
 	}
 }
@@ -348,7 +348,7 @@ func TestJSONStreamEscapedAndOversizedRequestInput(t *testing.T) {
 	escapedObjective := strings.Repeat(`\\`, 600000)
 	escapedBody := `{"title":"Escaped input","sections":{"objective":"` + escapedObjective + `"}}`
 	escapedRequest := streamRequest(t, []string{"create", "--input", "-"}, &escapedBody)
-	oversizedBody := `{"title":"Oversized input","sections":{"objective":"` + strings.Repeat("x", maxInputBytes) + `"}}`
+	oversizedBody := `{"title":"Oversized input","sections":{"objective":"` + strings.Repeat("x", maxInvocationInputBytes) + `"}}`
 	input := escapedRequest + "\n" +
 		streamRequest(t, []string{"create", "--input", "-"}, &oversizedBody) + "\n" +
 		streamRequest(t, []string{"version"}, nil) + "\n"
@@ -480,7 +480,8 @@ func TestJSONStreamSCMFailureReportsAppliedMutationAndRecovers(t *testing.T) {
 	t.Setenv("TICKET_SCM", "git")
 	t.Setenv("TICKET_SCM_MODE", "sync")
 
-	input := streamRequest(t, []string{"create", "Stream SCM failure", "Inspect the persisted ticket."}, nil) + "\n" +
+	createInput := `{"title":"Stream SCM failure","sections":{"objective":"Inspect the persisted ticket."}}`
+	input := streamRequest(t, []string{"create", "--input", "-"}, &createInput) + "\n" +
 		streamRequest(t, []string{"version"}, nil) + "\n"
 	out, stderr, code := runJSONStream(t, input)
 	if code != 0 || stderr != "" {

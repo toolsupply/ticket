@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/toolsupply/ticket/internal/contract"
@@ -8,10 +9,8 @@ import (
 	"github.com/toolsupply/ticket/internal/store"
 )
 
-func cmdList(ctx *commandContext, args []string, alias bool) error {
-	args = normalizeListAliasArgs(args)
-	bareHumanList := !ctx.json && len(args) == 0
-	p := &parser{}
+func cmdList(ctx *commandContext, args []string) error {
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -20,17 +19,25 @@ func cmdList(ctx *commandContext, args []string, alias bool) error {
 	var ids []string
 	var withoutTags []string
 	var tags []string
-	var all, long, byID, byModified bool
+	var all, archived, long, byID, byModified, idsOnly, deps, graph bool
+	p.boolValue("archived", &archived)
 	var markdown bool
 	p.boolValue("all", &all)
 	p.boolValue("long", &long)
 	p.boolValue("by-id", &byID)
 	p.boolValue("by-modified", &byModified)
 	p.boolValue("markdown", &markdown)
+	p.boolValue("ids", &idsOnly)
+	p.boolValue("deps", &deps)
+	p.boolValue("graph", &graph)
 	p.alias("a", "all")
 	p.alias("l", "long")
 	p.alias("t", "by-id")
 	p.alias("u", "by-modified")
+	p.alias("1", "ids")
+	var queryTokens []string
+	var querySet bool
+	registerQueryTail(p, &queryTokens, &querySet)
 	p.repeat("state", &states)
 	p.alias("s", "state")
 	p.repeat("tag", &tags)
@@ -52,40 +59,85 @@ func cmdList(ctx *commandContext, args []string, alias bool) error {
 	if err := p.parse(args); err != nil {
 		return err
 	}
+	// Selection modifiers determine the TicketSet. Output flags below are
+	// presentation/mode choices and must not alter the bare human defaults.
+	selectionSpecified := len(p.positionals) > 0 || querySet || len(states) > 0 ||
+		len(tags) > 0 || len(withoutTags) > 0 || assignee != "" || unassigned ||
+		parent != "" || hasPriority || all || archived || hasLimitVal ||
+		hasOffsetVal || byID || byModified
+	bareHumanList := !ctx.json && !selectionSpecified
 	ctx.markdown = markdown
 	if helpFlag {
 		return emitHelpCommand(ctx, "list")
 	}
+	if graph {
+		switch {
+		case idsOnly:
+			return contract.NewError(contract.ErrInvalidArgument, "--graph cannot be combined with --ids.", nil)
+		case fields != "":
+			return contract.NewError(contract.ErrInvalidArgument, "--graph cannot be combined with --fields.", nil)
+		case deps:
+			return contract.NewError(contract.ErrInvalidArgument, "--graph cannot be combined with --deps.", nil)
+		case markdown:
+			return contract.NewError(contract.ErrInvalidArgument, "--graph cannot be combined with --markdown.", nil)
+		case long:
+			return contract.NewError(contract.ErrInvalidArgument, "--graph cannot be combined with --long.", nil)
+		}
+	}
+	if idsOnly && ctx.json {
+		return contract.NewError(contract.ErrInvalidArgument, "IDs-only output cannot be combined with JSON output.", nil)
+	}
+	if idsOnly && (deps || markdown) {
+		return contract.NewError(contract.ErrInvalidArgument, "IDs-only output cannot be combined with dependency or Markdown output.", nil)
+	}
 	if err := ctx.check(); err != nil {
 		return err
 	}
-	if len(p.positionals) > 0 {
-		for _, positional := range p.positionals {
-			if isTicketState(positional) {
-				states = append(states, positional)
-				continue
-			}
-			if !looksLikeTicketRef(positional) {
-				return contract.NewError(contract.ErrInvalidArgument,
-					"State must be open, hold, review, signoff, completed, rejected, all, or a ticket ID.", nil)
-			}
-			ids = append(ids, positional)
+	prepared, targetErr := prepareTargetSpec(p.positionals, queryTokens, querySet, targetSpecOptions{
+		AllowLegacyStates: true,
+		AllowLegacyAll:    true,
+		Scope:             listQueryScope(all, archived),
+	})
+	if targetErr != nil {
+		return targetErr
+	}
+	if !prepared.HasQuery {
+		ids = append(ids, prepared.ExplicitRefs...)
+		states = append(states, prepared.LegacyStates...)
+		if prepared.LegacyAll {
+			states = append(states, "all")
 		}
 	}
-	if all {
+	if !prepared.HasQuery && all {
 		if len(ids) > 0 || (len(states) > 0 && !(len(states) == 1 && states[0] == "all")) {
 			return contract.NewError(contract.ErrInvalidArgument, "--all conflicts with ticket IDs or --state.", nil)
 		}
 		states = []string{"all"}
 	}
+	if all && archived {
+		return contract.NewError(contract.ErrInvalidArgument, "--all conflicts with --archived.", nil)
+	}
+	if archived && len(ids) > 0 {
+		return contract.NewError(contract.ErrInvalidArgument, "--archived conflicts with ticket IDs.", nil)
+	}
 	opts := domain.ListOptions{
 		IDs: ids, States: states, Tags: tags, WithoutTags: withoutTags,
 		Assignee: assignee, Unassigned: unassigned, Parent: parent,
+		ArchivedOnly: archived, IncludeArchived: all,
+	}
+	if deps {
+		opts.DependencyView = "all"
+	} else if !ctx.json && !idsOnly {
+		opts.DependencyView = "blocking"
 	}
 	if bareHumanList {
 		opts.State = "all"
 		opts.NonterminalOnly = true
 		opts.Unlimited = true
+	}
+	if !prepared.HasQuery && archived && len(states) == 0 {
+		states = []string{"all"}
+		opts.States = states
 	}
 	if hasLimitVal {
 		opts.Limit = limitVal
@@ -111,7 +163,7 @@ func cmdList(ctx *commandContext, args []string, alias bool) error {
 	// recently are the most useful entries to put in front of a person.
 	// JSON keeps the domain's deterministic priority/ID order for agents and
 	// scripts unless an explicit sort is requested.
-	if !ctx.json && !byID && !byModified {
+	if !prepared.HasQuery && !ctx.json && !idsOnly && !byID && !byModified {
 		byModified = true
 	}
 	if !ctx.json && len(states) == 1 && states[0] == "all" && !hasLimitVal {
@@ -123,34 +175,105 @@ func cmdList(ctx *commandContext, args []string, alias bool) error {
 	case byID:
 		opts.Sort = "id_desc"
 	}
+
+	if prepared.HasQuery {
+		if len(states) > 0 {
+			return ambiguousTargetError()
+		}
+		if hasLimitVal && limitVal <= 0 {
+			return contract.NewError(contract.ErrInvalidArgument, "Limit must be greater than zero.", nil)
+		}
+		if unassigned && assignee != "" {
+			return contract.NewError(contract.ErrInvalidArgument, "Assignee and unassigned conflict.", nil)
+		}
+		if prepared.Target.Query == nil {
+			return contract.NewError(contract.ErrInvalidArgument, "List query is missing an expression.", nil)
+		}
+		prepared.Target.Query.Expr = listQueryWithFilters(prepared.Target.Query.Expr, tags, withoutTags, assignee, unassigned, parent, priorityVal, hasPriority)
+		if hasLimitVal {
+			prepared.Target.Query.Limit = limitVal
+		}
+		prepared.Target.Query.Offset = offsetVal
+		if byModified {
+			prepared.Target.Query.Sort = domain.SortModifiedDesc
+		} else if byID {
+			prepared.Target.Query.Sort = domain.SortIDDesc
+		} else {
+			prepared.Target.Query.Sort = domain.SortPriorityID
+		}
+		return runRepoCommand(ctx, "list", func(st *store.Store) (any, error) {
+			set, err := domain.EvaluateTarget(st, prepared.Target)
+			if err != nil {
+				return nil, err
+			}
+			if graph {
+				return domain.GraphForTicketSet(set, domain.GraphOptions{})
+			}
+			result, err := domain.ProjectTicketSet(st, set, opts.Fields, opts.DependencyView)
+			if err != nil {
+				return nil, err
+			}
+			result.IDsOnly = idsOnly
+			return result, nil
+		})
+	}
 	return runRepoCommand(ctx, "list", func(st *store.Store) (any, error) {
-		return domain.List(st, opts)
+		if graph {
+			set, err := domain.SelectList(st, opts)
+			if err != nil {
+				return nil, err
+			}
+			return domain.GraphForTicketSet(set, domain.GraphOptions{})
+		}
+		result, err := domain.List(st, opts)
+		if err != nil {
+			return nil, err
+		}
+		result.IDsOnly = idsOnly
+		return result, nil
 	})
 }
 
-func normalizeListAliasArgs(args []string) []string {
-	var normalized []string
-	for _, arg := range args {
-		switch arg {
-		case "-ltua":
-			normalized = append(normalized, "-l", "-t", "-u", "-a")
-		case "-lt":
-			normalized = append(normalized, "-l", "-t")
-		case "-ltu":
-			normalized = append(normalized, "-l", "-t", "-u")
-		case "-la", "-al":
-			normalized = append(normalized, "-l", "-a")
-		default:
-			normalized = append(normalized, arg)
-		}
+func listQueryScope(all, archived bool) domain.QueryScope {
+	if archived {
+		return domain.ScopeArchived
 	}
-	return normalized
+	if all {
+		return domain.ScopeAll
+	}
+	return domain.ScopeActive
+}
+
+func listQueryWithFilters(expr domain.Expr, tags, withoutTags []string, assignee string, unassigned bool, parent string, priority int, hasPriority bool) domain.Expr {
+	terms := []domain.Expr{expr}
+	for _, tag := range tags {
+		terms = append(terms, domain.Field("tag", tag))
+	}
+	for _, tag := range withoutTags {
+		terms = append(terms, domain.Not(domain.Field("tag", tag)))
+	}
+	if assignee != "" {
+		terms = append(terms, domain.Field("assignee", assignee))
+	}
+	if unassigned {
+		terms = append(terms, domain.Bare("unclaimed"))
+	}
+	if parent != "" {
+		terms = append(terms, domain.Field("parent", parent))
+	}
+	if hasPriority {
+		terms = append(terms, domain.Field("priority", "P"+strconv.Itoa(priority)))
+	}
+	if len(terms) == 1 {
+		return expr
+	}
+	return domain.And(terms...)
 }
 
 // grep -----------------------------------------------------------------
 
 func cmdGrep(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -175,7 +298,7 @@ func cmdGrep(ctx *commandContext, args []string) error {
 // status ----------------------------------------------------------------
 
 func cmdStatus(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -205,7 +328,7 @@ func cmdStatus(ctx *commandContext, args []string) error {
 }
 
 func cmdReady(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -253,18 +376,20 @@ func cmdReady(ctx *commandContext, args []string) error {
 }
 
 func cmdNext(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
 	var claim bool
 	var markdown bool
 	var tags []string
+	var withoutTags []string
 	var priority int
 	var hasPriority bool
 	p.boolValue("claim", &claim)
 	p.boolValue("markdown", &markdown)
 	p.repeat("tag", &tags)
+	p.repeat("without-tag", &withoutTags)
 	p.intValue("priority", &priority, &hasPriority)
 	if err := p.parse(args); err != nil {
 		return err
@@ -288,7 +413,7 @@ func cmdNext(ctx *commandContext, args []string) error {
 			return err
 		}
 	}
-	opts := domain.NextOptions{Queue: queue, Tags: tags, Claim: claim, Actor: actor}
+	opts := domain.NextOptions{Queue: queue, Tags: tags, WithoutTags: withoutTags, Claim: claim, Actor: actor}
 	if hasPriority {
 		opts.Priority = &priority
 	}
@@ -311,7 +436,7 @@ func workQueue(positionals []string, command string) (string, error) {
 // show ------------------------------------------------------------------
 
 func cmdShow(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen

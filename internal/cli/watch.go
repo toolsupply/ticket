@@ -57,7 +57,7 @@ type watchOptions struct {
 }
 
 func cmdWatch(ctx *commandContext, args []string) error {
-	p := &parser{}
+	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
@@ -84,7 +84,11 @@ func cmdWatch(ctx *commandContext, args []string) error {
 	}
 	if options.State != "" && !watchStateFilter(options.State) {
 		return contract.NewError(contract.ErrInvalidArgument,
-			"Flag --state expects open, hold, review, signoff, completed, rejected, or all.", nil)
+			"Flag --state expects open, hold, review, signoff, closed, rejected, or all.", nil)
+	}
+	if options.State != "" && options.State != "all" {
+		normalized, _ := domain.NormalizeLifecycleState(options.State)
+		options.State = normalized
 	}
 	if err := ctx.check(); err != nil {
 		return err
@@ -257,12 +261,11 @@ func newWatchEvent(ticket watchSnapshot, kind, message string) watchEvent {
 }
 
 func watchStateFilter(state string) bool {
-	switch state {
-	case "open", "hold", "review", "signoff", "completed", "rejected", "all":
+	if state == "all" {
 		return true
-	default:
-		return false
 	}
+	_, ok := domain.NormalizeLifecycleState(state)
+	return ok
 }
 
 func watchEventMatches(event watchEvent, options watchOptions) bool {
@@ -416,7 +419,7 @@ func stateWatchEvent(from, to string) (string, string) {
 		return "submitted", "submitted for review"
 	case from == "review" && to == "signoff":
 		return "approved", "approved"
-	case from == "signoff" && to == "completed":
+	case from == "signoff" && to == "closed":
 		return "closed", "closed"
 	case to == "rejected":
 		return "rejected", "rejected"

@@ -10,7 +10,7 @@ import (
 )
 
 // lock.go: bounded advisory locking over the ticket root's .local/lock
-// file. v1 uses a single exclusive lock for reads and writes. The lock file is never
+// file. The repository uses a single exclusive lock for reads and writes. The lock file is never
 // deleted while live; the OS releases it when the process exits.
 //
 // Platform primitives are implemented per OS (unix flock / win32

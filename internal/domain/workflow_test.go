@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +43,7 @@ func TestWorkflowStatesAndTransitions(t *testing.T) {
 		t.Fatalf("close signoff: %v", err)
 	}
 	ticket, _ = ReadTicket(e.st, id)
-	if ticket.State != "completed" || ticket.Assignee != "" || ticket.SectionText("outcome") != "Accepted." {
+	if ticket.State != "closed" || ticket.Assignee != "" || ticket.SectionText("outcome") != "Accepted." {
 		t.Fatalf("completed signoff: %+v", ticket)
 	}
 
@@ -301,6 +302,83 @@ func TestOpenCommandReturnsAnyStateToImplementation(t *testing.T) {
 	}
 }
 
+func TestReactivationRejectsLatentReadinessCycles(t *testing.T) {
+	cases := []struct {
+		name  string
+		apply func(*testEnv, string) error
+	}{
+		{name: "open", apply: func(e *testEnv, id string) error {
+			_, err := Open(e.st, id, OpenOptions{})
+			return err
+		}},
+		{name: "open claim", apply: func(e *testEnv, id string) error {
+			_, err := Open(e.st, id, OpenOptions{Claim: true, Actor: "worker"})
+			return err
+		}},
+		{name: "state open", apply: func(e *testEnv, id string) error {
+			_, err := SetState(e.st, id, "open", StateOptions{})
+			return err
+		}},
+		{name: "state hold", apply: func(e *testEnv, id string) error {
+			_, err := SetState(e.st, id, "hold", StateOptions{})
+			return err
+		}},
+		{name: "review", apply: func(e *testEnv, id string) error {
+			_, err := Review(e.st, id, StateOptions{})
+			return err
+		}},
+	}
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, 9710+uint64(index))
+			parent := workflowTicket(t, e, "latent parent")
+			child := e.create(t, "latent child", CreateOptions{
+				Parent:   parent,
+				Sections: map[string]string{"objective": "Implement the child.", "acceptance": "The child is complete."},
+			})
+			if _, err := Close(e.st, child, CloseOptions{Outcome: "Temporarily closed."}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Update(e.st, child, UpdateOptions{Set: map[string]any{"depends_on": []any{parent}}}); err != nil {
+				t.Fatalf("latent relationship: %v", err)
+			}
+			path := filepath.Join(e.base, "tickets", child, "TASK.md")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.apply(e, child); err == nil || contractCode(t, err) != contract.ErrReadinessCycle {
+				t.Fatalf("activation error=%v, want readiness_cycle", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("rejected activation changed bytes: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckDiagnosesPreexistingActivatedReadinessCycle(t *testing.T) {
+	e := newEnv(t, 9715)
+	parent := workflowTicket(t, e, "preexisting parent")
+	child := e.create(t, "preexisting child", CreateOptions{
+		Parent:   parent,
+		Sections: map[string]string{"objective": "Implement the child.", "acceptance": "The child is complete."},
+	})
+	if _, err := Close(e.st, child, CloseOptions{Outcome: "Temporarily closed."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(e.st, child, UpdateOptions{Set: map[string]any{"depends_on": []any{parent}}}); err != nil {
+		t.Fatalf("latent relationship: %v", err)
+	}
+	if err := setStateLine(t, e.base, child, "- State: closed\n", "- State: open\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateGraphs(e.st); err == nil || contractCode(t, err) != contract.ErrReadinessCycle {
+		t.Fatalf("check error=%v, want readiness_cycle", err)
+	}
+}
+
 func TestBatchApprovalThenIndividualClose(t *testing.T) {
 	e := newEnv(t, 9604)
 	ids := []string{workflowTicket(t, e, "batch one"), workflowTicket(t, e, "batch two")}
@@ -322,7 +400,7 @@ func TestBatchApprovalThenIndividualClose(t *testing.T) {
 			t.Fatalf("close %s: %v", id, err)
 		}
 		ticket, err = ReadTicket(e.st, id)
-		if err != nil || ticket.State != "completed" {
+		if err != nil || ticket.State != "closed" {
 			t.Fatalf("batch completed %s: %+v", id, ticket)
 		}
 	}

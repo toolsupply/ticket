@@ -13,7 +13,7 @@ import (
 
 // A JSON string can represent each decoded input byte as a six-byte \u00XX
 // escape. Leave additional room for the request envelope and argv.
-const maxJSONStreamFrameBytes = maxInputBytes*6 + 1<<20
+const maxJSONStreamFrameBytes = maxInvocationInputBytes*6 + 1<<20
 
 var errJSONStreamFrameTooLarge = errors.New("JSON streaming request exceeds the maximum encoded frame size")
 
