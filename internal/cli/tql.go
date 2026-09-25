@@ -8,7 +8,7 @@ import (
 )
 
 var tqlFields = map[string]bool{
-	"state": true, "tag": true, "assignee": true, "priority": true, "parent": true,
+	"id": true, "state": true, "tag": true, "assignee": true, "priority": true, "parent": true,
 }
 
 var tqlBarePredicates = map[string]bool{

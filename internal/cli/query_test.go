@@ -192,6 +192,54 @@ func TestListUsesTQLAdaptersWithoutChangingLegacyDefaults(t *testing.T) {
 	}
 }
 
+func TestTQLIDPredicatesThroughListQueryAndComposition(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mustCLI(t, "init")
+	ids := make([]string, 3)
+	for i, title := range []string{"ID first", "ID second", "ID third"} {
+		ids[i] = exactlyOneJSONObject(t, mustCLI(t, "create", title, "Select this ticket by ID."))["id"].(string)
+	}
+
+	prefix := queryJSONItems(t, mustCLI(t, "list", "id:"+ids[0][:8]))
+	if len(prefix) != len(ids) {
+		t.Fatalf("ID prefix list returned %d items: %v", len(prefix), prefix)
+	}
+	ordered := queryJSONItems(t, mustCLI(t, "list", "id", "ge", ids[1]))
+	if len(ordered) != 2 || ordered[0].(map[string]any)["id"] != ids[1] || ordered[1].(map[string]any)["id"] != ids[2] {
+		t.Fatalf("ordered list comparison: %v", ordered)
+	}
+	query := queryJSONItems(t, mustCLI(t, "query", "id", "gt", ids[1]))
+	if len(query) != 1 || query[0].(map[string]any)["id"] != ids[2] {
+		t.Fatalf("ordered query comparison: %v", query)
+	}
+	tail := queryJSONItems(t, mustCLIJSONBeforeTail(t, "list", "-q", "id", "ge", ids[1]))
+	if len(tail) != 2 || tail[0].(map[string]any)["id"] != ids[1] || tail[1].(map[string]any)["id"] != ids[2] {
+		t.Fatalf("ordered query-tail list: %v", tail)
+	}
+	composed := queryJSONItems(t, mustCLI(t, "query", "id", "lt", ids[1], "::", "list"))
+	if len(composed) != 1 || composed[0].(map[string]any)["id"] != ids[0] {
+		t.Fatalf("ordered query composition: %v", composed)
+	}
+	for _, operator := range []string{"eq", "ne"} {
+		out, code := runCLI(t, "query", "id", operator, ids[1])
+		if code == 0 || errCode(t, out) != "invalid_argument" || !strings.Contains(out, "id:PREFIX") {
+			t.Errorf("id %s diagnostic: exit=%d output=%q", operator, code, out)
+		}
+	}
+	if out, code := runCLI(t, "query", "id", "lt", "bad-boundary"); code == 0 || errCode(t, out) != "invalid_argument" {
+		t.Fatalf("invalid ordered ID boundary: exit=%d output=%q", code, out)
+	}
+
+	for _, id := range ids {
+		mustCLI(t, "close", id)
+	}
+	archived := exactlyOneJSONObject(t, mustCLI(t, "query", "terminal", "unclaimed", "id", "lt", ids[1], "::", "archive"))
+	items := archived["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != ids[0] {
+		t.Fatalf("ordered archive composition selected wrong set: %v", archived)
+	}
+}
+
 func TestParseTQLRejectsAmbiguousAndMalformedExpressions(t *testing.T) {
 	if expr, err := parseTQL(nil); err != nil || expr != nil {
 		t.Fatalf("empty expression: expr=%v err=%v", expr, err)

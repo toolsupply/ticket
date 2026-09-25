@@ -398,25 +398,40 @@ func compilePredicate(st *store.Store, predicate Predicate) (queryMatcher, bool,
 	}
 	operator := predicate.Operator
 	if operator != "" {
-		if field != "priority" {
-			return nil, false, invalidQueryPredicate("only priority comparisons are supported")
-		}
-		want, err := parseQueryPriority(predicate.Value)
-		if err != nil {
-			return nil, false, err
-		}
 		if !validComparison(operator) {
 			return nil, false, invalidQueryPredicate("unknown comparison operator " + string(operator))
 		}
-		return func(_ *queryContext, ticket *Ticket) (bool, error) {
-			return compareInt(ticket.Priority, want, operator), nil
-		}, false, nil
+		switch field {
+		case "priority":
+			want, err := parseQueryPriority(predicate.Value)
+			if err != nil {
+				return nil, false, err
+			}
+			return func(_ *queryContext, ticket *Ticket) (bool, error) {
+				return compareInt(ticket.Priority, want, operator), nil
+			}, false, nil
+		case "id":
+			if operator == ComparisonEQ || operator == ComparisonNE {
+				return nil, false, invalidQueryPredicate("id eq/ne are not supported; use id:PREFIX or not id:PREFIX")
+			}
+			if operator != ComparisonLT && operator != ComparisonLE && operator != ComparisonGT && operator != ComparisonGE {
+				return nil, false, invalidQueryPredicate("id supports lt, le, gt, and ge comparisons")
+			}
+			if err := validateQueryID(predicate.Value); err != nil {
+				return nil, false, err
+			}
+			return func(_ *queryContext, ticket *Ticket) (bool, error) {
+				return compareString(ticket.ID, predicate.Value, operator), nil
+			}, false, nil
+		default:
+			return nil, false, invalidQueryPredicate("only priority and id comparisons are supported")
+		}
 	}
 
 	switch field {
 	case "id":
-		if _, _, ok := store.ParseID(predicate.Value); !ok && !identity.ValidShorthand(predicate.Value) {
-			return nil, false, invalidQueryPredicate("invalid ticket ID " + predicate.Value)
+		if err := validateQueryID(predicate.Value); err != nil {
+			return nil, false, err
 		}
 		return func(_ *queryContext, ticket *Ticket) (bool, error) {
 			return strings.HasPrefix(ticket.ID, predicate.Value), nil
@@ -465,6 +480,13 @@ func compilePredicate(st *store.Store, predicate Predicate) (queryMatcher, bool,
 	}
 }
 
+func validateQueryID(value string) error {
+	if _, _, ok := store.ParseID(value); !ok && !identity.ValidShorthand(value) {
+		return invalidQueryPredicate("invalid ticket ID " + value)
+	}
+	return nil
+}
+
 func invalidQueryPredicate(message string) error {
 	return contract.NewError(contract.ErrInvalidArgument, "Invalid query predicate: "+message+".", nil)
 }
@@ -504,6 +526,21 @@ func compareInt(left, right int, operator Comparison) bool {
 		return left == right
 	case ComparisonNE:
 		return left != right
+	case ComparisonLT:
+		return left < right
+	case ComparisonLE:
+		return left <= right
+	case ComparisonGT:
+		return left > right
+	case ComparisonGE:
+		return left >= right
+	default:
+		return false
+	}
+}
+
+func compareString(left, right string, operator Comparison) bool {
+	switch operator {
 	case ComparisonLT:
 		return left < right
 	case ComparisonLE:

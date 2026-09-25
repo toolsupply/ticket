@@ -87,6 +87,51 @@ func TestArchiveReferencesParticipateInActiveReadiness(t *testing.T) {
 	if err := ValidateGraphs(e.st); err != nil {
 		t.Fatalf("archive-aware graph validation: %v", err)
 	}
+	if err := ValidateActiveGraphs(e.st); err != nil {
+		t.Fatalf("active-only archive-aware graph validation: %v", err)
+	}
+}
+
+func TestValidateActiveGraphsIgnoresUnrelatedCorruptArchive(t *testing.T) {
+	e := newEnv(t, 8812)
+	active := e.create(t, "Active ticket", CreateOptions{})
+	archived := e.create(t, "Archived ticket", CreateOptions{})
+	if _, err := Close(e.st, archived, CloseOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Archive(e.st, archived); err != nil {
+		t.Fatal(err)
+	}
+	archiveTask := filepath.Join(e.base, "tickets", store.ArchiveDirName, archived, "TASK.md")
+	if err := os.WriteFile(archiveTask, []byte("corrupt archived ticket\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateActiveGraphs(e.st); err != nil {
+		t.Fatalf("active-only check rejected unrelated archive corruption (active %s): %v", active, err)
+	}
+	if err := ValidateGraphs(e.st); err == nil || contractCode(t, err) != contract.ErrInvalidTicket {
+		t.Fatalf("full check did not reject archive corruption: %v", err)
+	}
+}
+
+func TestValidateActiveGraphsDetectsActiveStructuralErrors(t *testing.T) {
+	e := newEnv(t, 8813)
+	dependency := e.create(t, "Dependency", CreateOptions{})
+	target := e.create(t, "Target", CreateOptions{DependsOn: []string{dependency}})
+	insertTaskFMLine(t, e.base, target, "depends_on: ["+dependency+", "+dependency+"]\n")
+	if err := ValidateActiveGraphs(e.st); err == nil || contractCode(t, err) != contract.ErrInvalidTicket {
+		t.Fatalf("active-only check did not reject duplicate active dependencies: %v", err)
+	}
+}
+
+func TestValidateActiveGraphsDetectsActiveRelationshipCycles(t *testing.T) {
+	e := newEnv(t, 8814)
+	first := e.create(t, "First", CreateOptions{})
+	second := e.create(t, "Second", CreateOptions{DependsOn: []string{first}})
+	insertTaskFMLine(t, e.base, first, "depends_on: ["+second+"]\n")
+	if err := ValidateActiveGraphs(e.st); err == nil || contractCode(t, err) != contract.ErrDependencyCycle {
+		t.Fatalf("active-only check did not reject a dependency cycle: %v", err)
+	}
 }
 
 func TestCombinedReadinessGraphResolvesArchivedRelationships(t *testing.T) {

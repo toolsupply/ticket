@@ -69,6 +69,8 @@ func TestPrepareTargetSpecClassifiesIDsLegacyAndTQL(t *testing.T) {
 		wantErr     string
 	}{
 		{name: "query", positionals: []string{"state:open", "or", "ready"}, hasQuery: true},
+		{name: "ID prefix query", positionals: []string{"id:202609"}, hasQuery: true},
+		{name: "ID comparison query", positionals: []string{"id", "lt", "202609"}, hasQuery: true},
 		{name: "ids plus query", positionals: []string{"20260923-12345", "state:open"}, refs: []string{"20260923-12345"}, hasQuery: true},
 		{name: "legacy states", positionals: []string{"open", "hold"}, states: []string{"open", "hold"}},
 		{name: "id plus legacy", positionals: []string{"20260923-12345", "open"}, refs: []string{"20260923-12345"}, states: []string{"open"}},
@@ -107,6 +109,15 @@ func TestPrepareTargetSpecPreservesIDLikeQueryValues(t *testing.T) {
 	set := domain.QuerySpec{Expr: prepared.Target.Query.Expr}
 	if set.Expr == nil {
 		t.Fatal("query expression missing")
+	}
+}
+
+func TestPrepareTargetSpecKeepsBareIDAsExplicitReference(t *testing.T) {
+	for _, id := range []string{"20260923-12345", "2026"} {
+		prepared, err := prepareTargetSpec([]string{id}, nil, false, targetSpecOptions{})
+		if err != nil || !equalStrings(prepared.ExplicitRefs, []string{id}) || prepared.HasQuery {
+			t.Errorf("bare ID %q: prepared=%+v err=%v", id, prepared, err)
+		}
 	}
 }
 

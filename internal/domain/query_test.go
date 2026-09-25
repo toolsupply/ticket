@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,54 @@ func TestEvaluateQueryOrderingLimitsAndTargetUnion(t *testing.T) {
 	if low == "" {
 		t.Fatal("unreachable test fixture")
 	}
+}
+
+func TestEvaluateQueryIDPrefixAndOrderedComparisons(t *testing.T) {
+	e := newEnv(t, 12011)
+	ids := []string{
+		e.create(t, "First ID", CreateOptions{}),
+		e.create(t, "Second ID", CreateOptions{}),
+		e.create(t, "Third ID", CreateOptions{}),
+	}
+
+	prefix, err := EvaluateQuery(e.st, QuerySpec{Expr: Field("id", ids[0][:8])})
+	if err != nil || len(prefix.Tickets) != len(ids) {
+		t.Fatalf("ID prefix query: ids=%v err=%v", prefix.IDs(), err)
+	}
+	for _, test := range []struct {
+		operator Comparison
+		want     []string
+	}{
+		{ComparisonLT, []string{ids[0]}},
+		{ComparisonLE, []string{ids[0], ids[1]}},
+		{ComparisonGT, []string{ids[2]}},
+		{ComparisonGE, []string{ids[1], ids[2]}},
+	} {
+		result, err := EvaluateQuery(e.st, QuerySpec{Expr: Compare("id", test.operator, ids[1])})
+		if err != nil || !equalQueryIDs(result.IDs(), test.want) {
+			t.Errorf("id %s %s: ids=%v want=%v err=%v", test.operator, ids[1], result.IDs(), test.want, err)
+		}
+	}
+	if _, err := EvaluateQuery(e.st, QuerySpec{Expr: Compare("id", ComparisonLT, "not-an-id")}); err == nil || !strings.Contains(err.Error(), "invalid ticket ID") {
+		t.Fatalf("invalid ID boundary diagnostic: %v", err)
+	}
+	for _, operator := range []Comparison{ComparisonEQ, ComparisonNE} {
+		if _, err := EvaluateQuery(e.st, QuerySpec{Expr: Compare("id", operator, ids[0])}); err == nil || !strings.Contains(err.Error(), "id:PREFIX") {
+			t.Errorf("id %s diagnostic: %v", operator, err)
+		}
+	}
+}
+
+func equalQueryIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestEvaluateQueryIsReadOnlyAndReportsCollectionDiagnostics(t *testing.T) {

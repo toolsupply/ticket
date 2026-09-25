@@ -164,6 +164,13 @@ TQL `or` has lower precedence than the implicit `and`:
 ticket query state:open tag:backend or state:review tag:backend
 ```
 
+Ticket IDs can be matched by canonical prefix or compared lexically:
+
+```sh
+ticket list id:202609
+ticket query terminal id lt 202609 :: archive
+```
+
 ### Hints
 
 - `ticket -i` is a simple shell mode where human does not have to type ticket in front of every command.
@@ -278,7 +285,7 @@ For example, configure an editor that waits for completion:
 export TICKET_EDITOR="code --wait"
 ```
 
-### Configuration file
+## Configuration file
 
 An optional `~/.ticket/config.json` can define named scopes for users who work
 with more than one ticket repository or routing group.
@@ -480,7 +487,10 @@ This is suitable when one coding agent works in the checkout and other participa
 
 In this configuration, Git synchronization performed by `ticket` advances the same branch and working tree used for normal development.
 
-### Security and operational boundaries
+## Security and operational boundaries
+
+`ticket` attempts to handle filesystem containment, symlinks and locking with
+platform-appropriate mechanisms.
 
 `ticket` does not contain access controls of any kind; access to tickets is
 controlled by filesystem permissions. `TICKET_ACTOR` and `--actor` identify a
@@ -491,11 +501,18 @@ Configured editors, decorators, SCM hooks, and Git or SVN commands are external
 programs. `ticket` does not add a sandbox around them; they run within the
 environment and permissions of the process invoking `ticket`.
 
-An explicit Git push destination narrows what `ticket` publishes, but it cannot
+An explicit Git push destination controls where `ticket` publishes, but it cannot
 isolate a shared branch from its required unpublished ancestor commits. Use a
 dedicated branch or worktree when history isolation matters.
 
-## Building
+## Source code
+
+### Why not Rust?
+
+The standard library of Go is a plenty swell fit for ticket's security and
+deployment requirements.
+
+### Building
 
 Toolchain: Go `1.26.8`. No CGO or third-party Go dependencies are required.
 
@@ -503,10 +520,10 @@ Toolchain: Go `1.26.8`. No CGO or third-party Go dependencies are required.
 make build && ./bin/ticket version
 ```
 
-## Tests
+### Tests
 
 ```sh
-go test ./... && go vet ./...
+go test ./... && go vet ./... && go test -race ./...
 ```
 
 ## Inspiration

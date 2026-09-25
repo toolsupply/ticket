@@ -144,6 +144,8 @@ func cmdCheck(ctx *commandContext, args []string) error {
 	ctx.registerWithoutActor(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
+	var activeOnly bool
+	p.boolValue("active", &activeOnly)
 	if err := p.parse(args); err != nil {
 		return err
 	}
@@ -157,7 +159,13 @@ func cmdCheck(ctx *commandContext, args []string) error {
 		return err
 	}
 	return runRepoCommand(ctx, "check", func(st *store.Store) (any, error) {
-		if err := domain.ValidateGraphs(st); err != nil {
+		var err error
+		if activeOnly {
+			err = domain.ValidateActiveGraphs(st)
+		} else {
+			err = domain.ValidateGraphs(st)
+		}
+		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil

@@ -202,23 +202,113 @@ func ValidateGraphs(st *store.Store) error {
 	if err != nil || len(tickets) == 0 {
 		return err
 	}
-	byID := make(map[string]bool, len(tickets))
+	owners := make(map[string]bool, len(tickets))
 	for _, ticket := range tickets {
-		byID[ticket.ID] = true
+		owners[ticket.ID] = true
+	}
+	return validateExistingGraphs(tickets, owners)
+}
+
+// ValidateActiveGraphs validates active ticket structure and relationships
+// without scanning unrelated archived tickets. Archived tickets explicitly
+// referenced by active tickets are read to preserve reference resolution,
+// but their own relationships are not traversed or validated.
+func ValidateActiveGraphs(st *store.Store) error {
+	active, diags, err := scanWith(st)
+	if err != nil {
+		return err
+	}
+	if len(diags) > 0 {
+		return collectionError(diags)
+	}
+	owners := make(map[string]bool, len(active))
+	byID := make(map[string]*Ticket, len(active))
+	for _, ticket := range active {
+		owners[ticket.ID] = true
+		byID[ticket.ID] = ticket
+	}
+	for _, ticket := range active {
+		references := append([]string{ticket.Parent}, ticket.DependsOn...)
+		for _, ref := range references {
+			if ref == "" || byID[ref] != nil {
+				continue
+			}
+			archived, readErr := ReadTicket(st, ref)
+			if readErr != nil {
+				var ce *contract.Error
+				if errors.As(readErr, &ce) && ce.Code == contract.ErrNotFound {
+					continue // The shared validator reports the dangling edge below.
+				}
+				return readErr
+			}
+			byID[archived.ID] = archived
+		}
+	}
+	tickets := make([]*Ticket, 0, len(byID))
+	for _, ticket := range byID {
+		tickets = append(tickets, ticket)
+	}
+	return validateExistingGraphs(tickets, owners)
+}
+
+// validateExistingGraphs shares reference and cycle validation for full and
+// active-only checks. owners identifies tickets whose stored relationships
+// are authoritative for the selected validation scope.
+func validateExistingGraphs(tickets []*Ticket, owners map[string]bool) error {
+	byID := make(map[string]*Ticket, len(tickets))
+	for _, ticket := range tickets {
+		byID[ticket.ID] = ticket
 	}
 	for _, ticket := range tickets {
-		if ticket.Parent != "" && !byID[ticket.Parent] {
+		if !owners[ticket.ID] {
+			continue
+		}
+		if ticket.Parent != "" && byID[ticket.Parent] == nil {
 			return contract.NewError(contract.ErrDanglingReference,
 				"Parent references a missing ticket.", map[string]any{"id": ticket.ID, "parent": ticket.Parent})
 		}
 		for _, dep := range ticket.DependsOn {
-			if !byID[dep] {
+			if byID[dep] == nil {
 				return contract.NewError(contract.ErrDanglingReference,
 					"Dependency references a missing ticket.", map[string]any{"id": ticket.ID, "depends_on": dep})
 			}
 		}
 	}
-	return validateGraphCandidate(tickets, tickets[0])
+	parent := make(map[string]string, len(owners))
+	deps := make(map[string][]string, len(owners))
+	waitFor := make(map[string][]string, len(owners))
+	for id := range owners {
+		parent[id] = ""
+		deps[id] = nil
+		waitFor[id] = nil
+	}
+	for _, ticket := range tickets {
+		if !owners[ticket.ID] {
+			continue
+		}
+		if ticket.Parent != "" && owners[ticket.Parent] {
+			parent[ticket.ID] = ticket.Parent
+			if !ticket.IsTerminal() {
+				waitFor[ticket.Parent] = append(waitFor[ticket.Parent], ticket.ID)
+			}
+		}
+		for _, dependency := range ticket.DependsOn {
+			if owners[dependency] {
+				deps[ticket.ID] = append(deps[ticket.ID], dependency)
+				if !ticket.IsTerminal() && !byID[dependency].IsTerminal() {
+					waitFor[ticket.ID] = append(waitFor[ticket.ID], dependency)
+				}
+			}
+		}
+	}
+	if err := detectStringGraphCycle(parent, contract.ErrParentCycle); err != nil {
+		return err
+	}
+	if err := detectSliceGraphCycle(deps, contract.ErrDependencyCycle); err != nil {
+		return err
+	}
+	return detectSliceGraphCycleWithMessage(waitFor, contract.ErrReadinessCycle,
+		"Readiness wait-for graph contains a cycle.")
 }
 
 func loadAllGraph(st *store.Store) ([]*Ticket, error) {
