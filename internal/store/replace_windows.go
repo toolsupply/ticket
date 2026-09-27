@@ -3,9 +3,12 @@
 package store
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -16,9 +19,18 @@ var rootRename = func(root *os.Root, oldname, newname string) error {
 func publishReplaceRoot(root *os.Root, target, tmp string) error {
 	// Root.Rename is the descriptor-relative replacement primitive. The
 	// managed contract requires complete replacement and preservation of the
-	// canonical target when publication fails; native tests exercise both
-	// properties through Store.ReplaceTask.
-	return rootRename(root, tmp, target)
+	// canonical target when publication fails. Concurrent opens validate
+	// config.json before taking the repository lock, so Windows may briefly
+	// deny replacement while those bounded reads drain. Retry only that
+	// permission failure, keeping the operation rooted and atomic.
+	const retries = 5
+	for attempt := 0; ; attempt++ {
+		err := rootRename(root, tmp, target)
+		if err == nil || !errors.Is(err, fs.ErrPermission) || attempt == retries {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
 }
 
 func recoverFailedReplacement(target, tmp string) error {

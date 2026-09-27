@@ -15,11 +15,11 @@ func TestInfoReportsUnnamedRepositoryMetadata(t *testing.T) {
 		t.Fatalf("init: exit=%d out=%q", code, out)
 	}
 	result := exactlyOneJSONObject(t, mustCLI(t, "info"))
-	if result["path"] != filepath.Join(dir, "tickets") || result["name"] != nil || result["scope"] != nil || result["format_version"] != float64(1) || result["storage_version"] != float64(1) {
+	if result["path"] != filepath.Join(dir, "tickets") || result["name"] != nil || result["id"] == "" || result["scope"] != nil || result["format_version"] != float64(1) || result["storage_version"] != float64(1) {
 		t.Fatalf("unnamed info: %v", result)
 	}
 	human, code := runCLIHuman(t, "info")
-	if code != 0 || !strings.Contains(human, "name:            (unnamed)") || !strings.Contains(human, "scope:            (none)") {
+	if code != 0 || !strings.Contains(human, "name:            (unnamed)") || !strings.Contains(human, "id:              "+result["id"].(string)) || !strings.Contains(human, "scope:            (none)") {
 		t.Fatalf("unnamed human info: exit=%d out=%q", code, human)
 	}
 }
@@ -44,7 +44,32 @@ func TestInfoReportsNameAndSelectedScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := exactlyOneJSONObject(t, mustCLI(t, "--config", configPath, "--scope", "named", "info"))
-	if result["path"] != root || result["name"] != "Named repository" || result["scope"] != "named" {
+	if result["path"] != root || result["name"] != "Named repository" || result["id"] == "" || result["scope"] != "named" {
 		t.Fatalf("named scoped info: %v", result)
+	}
+}
+
+func TestInfoJSONRejectsPresentMalformedRepositoryID(t *testing.T) {
+	for _, id := range []string{`""`, `null`} {
+		t.Run(id, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if out, code := runCLI(t, "init"); code != 0 {
+				t.Fatalf("init: exit=%d out=%q", code, out)
+			}
+			configPath := filepath.Join(dir, "tickets", "config.json")
+			original := []byte(`{"format_version":1,"id":` + id + `}`)
+			if err := os.WriteFile(configPath, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, code := runCLI(t, "info")
+			if code == 0 || errCode(t, out) != "invalid_repository" || !strings.Contains(out, "canonical UUIDv4") {
+				t.Fatalf("info accepted malformed persisted ID: exit=%d out=%q", code, out)
+			}
+			persisted, err := os.ReadFile(configPath)
+			if err != nil || string(persisted) != string(original) {
+				t.Fatalf("info rewrote malformed ID: config=%s err=%v", persisted, err)
+			}
+		})
 	}
 }

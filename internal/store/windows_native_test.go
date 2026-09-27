@@ -5,6 +5,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -67,6 +68,42 @@ func TestWindowsReplaceFailureLeavesTargetIntact(t *testing.T) {
 	data, err = os.ReadFile(target)
 	if err != nil || string(data) != "new bytes\n" {
 		t.Fatalf("target not replaced after failure case: %q (%v)", data, err)
+	}
+}
+
+func TestWindowsRootReplaceRetriesTransientAccessDenied(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json.new"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+
+	original := rootRename
+	defer func() { rootRename = original }()
+	attempts := 0
+	rootRename = func(root *os.Root, oldname, newname string) error {
+		attempts++
+		if attempts < 3 {
+			return syscall.ERROR_ACCESS_DENIED
+		}
+		return original(root, oldname, newname)
+	}
+	if err := publishReplaceRoot(root, "config.json", "config.json.new"); err != nil {
+		t.Fatalf("publish after transient access denied: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("root rename attempts=%d want 3", attempts)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil || string(data) != "new\n" {
+		t.Fatalf("replacement target=%q err=%v", data, err)
 	}
 }
 

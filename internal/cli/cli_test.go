@@ -15,6 +15,7 @@ import (
 
 	"github.com/toolsupply/ticket/internal/contract"
 	"github.com/toolsupply/ticket/internal/domain"
+	"github.com/toolsupply/ticket/internal/scm"
 	"github.com/toolsupply/ticket/internal/store"
 )
 
@@ -743,18 +744,13 @@ func TestSCMRetryPublishesPendingMutationAfterPushFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 17 || lines[0] != "rev-parse --show-toplevel" ||
-		lines[1] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[2] != "pull --ff-only" ||
-		lines[3] != "add -- "+id+"/TASK.md" || lines[4] != "diff --cached --quiet -- "+id+"/TASK.md" ||
-		!strings.HasPrefix(lines[5], "commit --only -m ticket: claim ") ||
-		lines[5] != "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md" ||
-		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[8] != "push -- origin HEAD:refs/heads/main" ||
-		lines[9] != "rev-parse --show-toplevel" || lines[10] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
-		lines[11] != "pull --ff-only" || lines[12] != "add -- "+id+"/TASK.md" ||
-		lines[13] != "diff --cached --quiet -- "+id+"/TASK.md" ||
-		lines[14] != "rev-parse --show-toplevel" || lines[15] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[16] != "push -- origin HEAD:refs/heads/main" {
-		t.Fatalf("pending publish lifecycle: %q", string(data))
+	log := string(data)
+	if strings.Count(log, "pull --ff-only") != 2 ||
+		strings.Count(log, "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md") != 1 ||
+		strings.Count(log, "push -- origin HEAD:refs/heads/main") != 2 ||
+		strings.Index(log, "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md") > strings.Index(log, "push -- origin HEAD:refs/heads/main") ||
+		strings.Index(log, "push -- origin HEAD:refs/heads/main") > strings.LastIndex(log, "pull --ff-only") {
+		t.Fatalf("pending publish lifecycle: %q", log)
 	}
 }
 
@@ -785,17 +781,14 @@ func TestSCMRetryCommitsPendingMutationAfterCommitFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 15 || lines[0] != "rev-parse --show-toplevel" ||
-		lines[1] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[2] != "pull --ff-only" ||
-		lines[3] != "add -- "+id+"/TASK.md" || lines[4] != "diff --cached --quiet -- "+id+"/TASK.md" ||
-		lines[5] != "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md" ||
-		lines[6] != "rev-parse --show-toplevel" || lines[7] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" ||
-		lines[8] != "pull --ff-only" || lines[9] != "add -- "+id+"/TASK.md" ||
-		lines[10] != "diff --cached --quiet -- "+id+"/TASK.md" ||
-		lines[11] != "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md" ||
-		lines[12] != "rev-parse --show-toplevel" || lines[13] != "rev-parse --abbrev-ref --symbolic-full-name @{u}" || lines[14] != "push -- origin HEAD:refs/heads/main" {
-		t.Fatalf("pending commit lifecycle: %q", string(data))
+	log := string(data)
+	firstCommit := strings.Index(log, "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md")
+	secondCommit := strings.LastIndex(log, "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md")
+	secondPull := strings.LastIndex(log, "pull --ff-only")
+	push := strings.Index(log, "push -- origin HEAD:refs/heads/main")
+	if strings.Count(log, "pull --ff-only") != 2 || strings.Count(log, "commit --only -m ticket: claim "+id+" -- "+id+"/TASK.md") != 2 ||
+		strings.Count(log, "push -- origin HEAD:refs/heads/main") != 1 || firstCommit > secondPull || secondPull > secondCommit || secondCommit > push {
+		t.Fatalf("pending commit lifecycle: %q", log)
 	}
 }
 
@@ -951,11 +944,323 @@ func TestSCMRealGitRejectsUpstreamLocalSymlinkWithoutMarkerWrites(t *testing.T) 
 	}
 }
 
+func makeLegacyGitClones(t *testing.T) (base, remote, cloneA, cloneB string, runGit func(string, ...string) []byte) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	base = t.TempDir()
+	remote = filepath.Join(base, "remote.git")
+	seed := filepath.Join(base, "seed")
+	cloneA = filepath.Join(base, "clone-a")
+	cloneB = filepath.Join(base, "clone-b")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InitRoot(filepath.Join(seed, "tickets")); err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig := []byte("{\"format_version\":1,\"name\":\"Legacy SCM repository\"}\n")
+	configPath := filepath.Join(seed, "tickets", "config.json")
+	if err := os.WriteFile(configPath, legacyConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit = func(dir string, args ...string) []byte {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+		return output
+	}
+	runGit(base, "init", "--bare", remote)
+	runGit(seed, "init")
+	runGit(seed, "config", "user.email", "ticket@example.invalid")
+	runGit(seed, "config", "user.name", "Ticket Test")
+	runGit(seed, "add", ".")
+	runGit(seed, "commit", "-m", "legacy repository")
+	runGit(seed, "branch", "-M", "main")
+	runGit(seed, "remote", "add", "origin", remote)
+	runGit(seed, "push", "-u", "origin", "main")
+	runGit(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(base, "clone", remote, cloneA)
+	runGit(base, "clone", remote, cloneB)
+	for _, clone := range []string{cloneA, cloneB} {
+		runGit(clone, "config", "user.email", "ticket@example.invalid")
+		runGit(clone, "config", "user.name", "Ticket Test")
+	}
+	return base, remote, cloneA, cloneB, runGit
+}
+
+func TestSCMLegacyRepositoryIDBackfillConvergesAcrossClones(t *testing.T) {
+	base, remote, cloneA, cloneB, runGit := makeLegacyGitClones(t)
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+
+	t.Chdir(cloneA)
+	infoA := exactlyOneJSONObject(t, mustCLI(t, "info"))
+	idA, _ := infoA["id"].(string)
+	if idA == "" {
+		t.Fatalf("clone A did not report an ID: %v", infoA)
+	}
+	configA, err := store.LoadConfig(filepath.Join(cloneA, "tickets"))
+	if err != nil || configA.ID != idA {
+		t.Fatalf("clone A config=%+v err=%v", configA, err)
+	}
+	remoteConfig := runGit(base, "--git-dir", remote, "show", "refs/heads/main:tickets/config.json")
+	if !bytes.Contains(remoteConfig, []byte(idA)) {
+		t.Fatalf("remote config does not contain clone A ID %q: %s", idA, remoteConfig)
+	}
+
+	t.Chdir(cloneB)
+	legacyB, err := store.LoadConfig(filepath.Join(cloneB, "tickets"))
+	if err != nil || legacyB.ID != "" || legacyB.Name != configA.Name {
+		t.Fatalf("clone B initial config=%+v err=%v; want a legacy config with no ID", legacyB, err)
+	}
+	infoB := exactlyOneJSONObject(t, mustCLI(t, "info"))
+	if idB, _ := infoB["id"].(string); idB != idA {
+		t.Fatalf("clone B ID=%q want clone A ID %q", idB, idA)
+	}
+	configB, err := store.LoadConfig(filepath.Join(cloneB, "tickets"))
+	if err != nil || configB.ID != configA.ID || configB.Name != configA.Name {
+		t.Fatalf("clone B config=%+v want synchronized config %+v err=%v", configB, configA, err)
+	}
+	status := runGit(cloneB, "status", "--porcelain")
+	if len(bytes.TrimSpace(status)) != 0 {
+		t.Fatalf("clone B has local changes after synchronized read: %q", status)
+	}
+}
+
+func TestSCMConfiguredUnsynchronizedOpenDefersRepositoryID(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	legacyConfig := []byte("{\"format_version\":1,\"name\":\"legacy\"}\n")
+	configPath := filepath.Join(dir, "tickets", "config.json")
+	if err := os.WriteFile(configPath, legacyConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installFakeSCM(t, filepath.Join(dir, "bin"), "scm-lifecycle")
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	g := globalOpts{}
+	st, err := g.openStore(dir)
+	if err != nil {
+		t.Fatalf("unsynchronized open: %v", err)
+	}
+	defer st.Close()
+	if st.Cfg.ID != "" {
+		t.Fatalf("unsynchronized SCM open generated repository ID %q", st.Cfg.ID)
+	}
+	current, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(current, legacyConfig) {
+		t.Fatalf("unsynchronized open changed config: %s err=%v", current, err)
+	}
+}
+
+func TestSCMSVNBackfillsAfterUpdateAndCommitsConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	configPath := filepath.Join(dir, "tickets", "config.json")
+	if err := os.WriteFile(configPath, []byte("{\"format_version\":1}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "svn.log")
+	installFakeSVN(t, filepath.Join(dir, "bin"), "scm-svn-lifecycle")
+	t.Setenv("SCM_LOG", logPath)
+	t.Setenv("SCM_STATE", filepath.Join(dir, "svn-committed"))
+	t.Setenv("TICKET_SCM", "svn")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	info := exactlyOneJSONObject(t, mustCLI(t, "info"))
+	if id, _ := info["id"].(string); id == "" {
+		t.Fatalf("SVN info did not report repository ID: %v", info)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 6 || lines[1] != "update ." ||
+		lines[3] != "add --force --depth infinity -- config.json@" ||
+		lines[4] != "status --quiet -- config.json@" ||
+		lines[5] != "commit -m ticket: repository ID backfill -- config.json@" {
+		t.Fatalf("SVN migration order/paths: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "svn-committed")); err != nil {
+		t.Fatalf("SVN migration was not committed: %v", err)
+	}
+}
+
+func TestSCMConcurrentLegacyBackfillCannotReplacePublishedID(t *testing.T) {
+	base, remote, cloneA, cloneB, runGit := makeLegacyGitClones(t)
+	backend, err := scm.ConfigureValues("git", "sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openDeferred := func(root string) *store.Store {
+		t.Helper()
+		st, err := store.Open(root, store.OpenOptions{Root: filepath.Join(root, "tickets"), DeferRepositoryIDBackfill: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	stA := openDeferred(cloneA)
+	defer stA.Close()
+	stB := openDeferred(cloneB)
+	defer stB.Close()
+	for _, st := range []*store.Store{stA, stB} {
+		if err := backend.ValidateLocal(st.Root); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.Update(st.Root); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.ValidateLocal(st.Root); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.RevalidateAfterSync(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idA, changedA, err := stA.EnsureRepositoryID()
+	if err != nil || !changedA {
+		t.Fatalf("clone A assurance id=%q changed=%t err=%v", idA, changedA, err)
+	}
+	if err := persistRepositoryID(backend, stA); err != nil {
+		t.Fatalf("clone A publish: %v", err)
+	}
+	idB, changedB, err := stB.EnsureRepositoryID()
+	if err != nil || !changedB || idB == idA {
+		t.Fatalf("clone B assurance id=%q changed=%t err=%v; want its stale legacy view to generate a competing ID", idB, changedB, err)
+	}
+	if err := persistRepositoryID(backend, stB); err == nil || !strings.Contains(err.Error(), "publish failed") {
+		t.Fatalf("clone B conflicting publish error=%v", err)
+	}
+	remoteConfig := runGit(base, "--git-dir", remote, "show", "refs/heads/main:tickets/config.json")
+	if !bytes.Contains(remoteConfig, []byte(idA)) || bytes.Contains(remoteConfig, []byte(idB)) {
+		t.Fatalf("conflicting clone overwrote remote ID: A=%q B=%q remote=%s", idA, idB, remoteConfig)
+	}
+}
+
+func TestSCMRepositoryIDRetryReusesIDAfterCommitOrPublishFailure(t *testing.T) {
+	for _, failure := range []string{"commit", "publish"} {
+		t.Run(failure, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if out, code := runCLI(t, "init"); code != 0 {
+				t.Fatalf("init: exit=%d out=%q", code, out)
+			}
+			configPath := filepath.Join(dir, "tickets", "config.json")
+			if err := os.WriteFile(configPath, []byte("{\"format_version\":1}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(dir, "scm-state")
+			log := filepath.Join(dir, "scm.log")
+			installFakeSCM(t, filepath.Join(dir, "bin"), "scm-repository-id-retry")
+			t.Setenv("SCM_STATE", state)
+			t.Setenv("SCM_LOG", log)
+			t.Setenv("TICKET_SCM", "git")
+			t.Setenv("TICKET_SCM_MODE", "sync")
+			if failure == "commit" {
+				t.Setenv("FAIL_COMMIT", "1")
+			} else {
+				t.Setenv("FAIL_PUSH", "1")
+			}
+			out, code := runCLI(t, "info")
+			if code == 0 || errCode(t, out) != "io_error" {
+				t.Fatalf("initial migration %s failure: exit=%d out=%q", failure, code, out)
+			}
+			errorObject := exactlyOneJSONObject(t, out)["error"].(map[string]any)
+			details := errorObject["details"].(map[string]any)
+			if details["mutation_applied"] != true || details["repository_id_backfill_pending"] != true || details["repository_id_backfill_stage"] != failure {
+				t.Fatalf("migration failure details: %v", errorObject)
+			}
+			if !strings.Contains(errorObject["message"].(string), "SCM "+failure+" failed") {
+				t.Fatalf("migration failure message lost SCM error: %v", errorObject)
+			}
+			firstConfig, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstID, err := store.LoadConfig(filepath.Join(dir, "tickets"))
+			if err != nil || firstID.ID == "" {
+				t.Fatalf("migration did not preserve generated ID: config=%+v err=%v", firstID, err)
+			}
+			t.Setenv("FAIL_COMMIT", "0")
+			t.Setenv("FAIL_PUSH", "0")
+			info := exactlyOneJSONObject(t, mustCLI(t, "info"))
+			if info["id"] != firstID.ID {
+				t.Fatalf("retry ID=%v want preserved ID %q", info["id"], firstID.ID)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "tickets", ".local", "repository-id-backfill-pending")); !os.IsNotExist(err) {
+				t.Fatalf("successful retry retained repository-ID marker: %v", err)
+			}
+			retriedConfig, err := os.ReadFile(configPath)
+			if err != nil || !bytes.Equal(retriedConfig, firstConfig) {
+				t.Fatalf("retry changed repository ID/config: before=%s after=%s err=%v", firstConfig, retriedConfig, err)
+			}
+			logged, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(logged), "add -- config.json") || !strings.Contains(string(logged), "commit --only -m ticket: repository ID backfill -- config.json") || !strings.Contains(string(logged), "push -- origin HEAD:refs/heads/main") {
+				t.Fatalf("migration did not explicitly commit and publish config.json: %s", logged)
+			}
+		})
+	}
+}
+
+func TestSCMRepositoryIDMarkerCleanupFailureReportsAppliedMigration(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if out, code := runCLI(t, "init"); code != 0 {
+		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	configPath := filepath.Join(dir, "tickets", "config.json")
+	if err := os.WriteFile(configPath, []byte("{\"format_version\":1}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installFakeSCM(t, filepath.Join(dir, "bin"), "scm-backfill-clear-marker-failure")
+	t.Setenv("SCM_LOG", filepath.Join(dir, "scm.log"))
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	out, code := runCLI(t, "info")
+	if code == 0 || errCode(t, out) != "io_error" {
+		t.Fatalf("marker cleanup failure: exit=%d out=%q", code, out)
+	}
+	errorObject := exactlyOneJSONObject(t, out)["error"].(map[string]any)
+	details, ok := errorObject["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("marker cleanup failure omitted details: %v", errorObject)
+	}
+	if details["mutation_applied"] != true || details["repository_id_backfill_pending"] != true || details["repository_id_backfill_stage"] != "retry marker cleanup" || details["id"] == "" {
+		t.Fatalf("marker cleanup failure details: %v", errorObject)
+	}
+	if !strings.Contains(errorObject["message"].(string), "Cannot clear repository-ID migration state") {
+		t.Fatalf("marker cleanup failure message: %v", errorObject)
+	}
+	if cfg, err := store.LoadConfig(filepath.Join(dir, "tickets")); err != nil || cfg.ID != details["id"] {
+		t.Fatalf("published migration config=%+v err=%v; details=%v", cfg, err, details)
+	}
+}
+
 func TestSCMUpdateFailurePreventsMutationInBothOutputModes(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if out, code := runCLI(t, "init"); code != 0 {
 		t.Fatalf("init: exit=%d out=%q", code, out)
+	}
+	configPath := filepath.Join(dir, "tickets", "config.json")
+	legacyConfig := []byte("{\"format_version\":1,\"name\":\"legacy\"}\n")
+	if err := os.WriteFile(configPath, legacyConfig, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	binDir := filepath.Join(dir, "bin")
 	installFakeSCM(t, binDir, "scm-update-failure")
@@ -969,6 +1274,9 @@ func TestSCMUpdateFailurePreventsMutationInBothOutputModes(t *testing.T) {
 			t.Fatalf("pre-mutation failure falsely reports applied mutation: %v", errorObject)
 		}
 	}
+	if current, err := os.ReadFile(configPath); err != nil || !bytes.Equal(current, legacyConfig) {
+		t.Fatalf("update failure changed legacy config: %s err=%v", current, err)
+	}
 	entries, err := os.ReadDir(filepath.Join(dir, "tickets"))
 	if err != nil {
 		t.Fatal(err)
@@ -981,6 +1289,9 @@ func TestSCMUpdateFailurePreventsMutationInBothOutputModes(t *testing.T) {
 	stdout, stderr, code := runCLIHumanError(t, "create", "Human SCM failure", "Should also not publish.")
 	if code == 0 || stdout != "" || !strings.Contains(stderr, "remote unavailable") {
 		t.Fatalf("human update failure: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if current, err := os.ReadFile(configPath); err != nil || !bytes.Equal(current, legacyConfig) {
+		t.Fatalf("human update failure changed legacy config: %s err=%v", current, err)
 	}
 }
 

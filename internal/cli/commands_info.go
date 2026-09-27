@@ -13,6 +13,7 @@ import (
 type repositoryInfo struct {
 	Path           string  `json:"path"`
 	Name           *string `json:"name"`
+	ID             string  `json:"id"`
 	FormatVersion  int     `json:"format_version"`
 	StorageVersion int     `json:"storage_version"`
 	Scope          *string `json:"scope"`
@@ -38,6 +39,7 @@ func cmdInfo(ctx *commandContext, args []string) error {
 	return runRepoCommandMode(ctx, "info", false, func(st *store.Store) (any, error) {
 		result := &repositoryInfo{
 			Path:           st.Root,
+			ID:             st.Cfg.ID,
 			FormatVersion:  st.Cfg.FormatVersion,
 			StorageVersion: contract.StorageVersion,
 		}
@@ -62,6 +64,6 @@ func renderRepositoryInfoHuman(ctx *commandContext, result *repositoryInfo) {
 	if result.Scope != nil {
 		scope = *result.Scope
 	}
-	fmt.Fprintf(ctx.stdout, "path:            %s\nname:            %s\nformat_version:  %d\nstorage_version: %d\nscope:            %s\n",
-		safeSingleLine(result.Path), safeSingleLine(name), result.FormatVersion, result.StorageVersion, safeSingleLine(scope))
+	fmt.Fprintf(ctx.stdout, "path:            %s\nname:            %s\nid:              %s\nformat_version:  %d\nstorage_version: %d\nscope:            %s\n",
+		safeSingleLine(result.Path), safeSingleLine(name), safeSingleLine(result.ID), result.FormatVersion, result.StorageVersion, safeSingleLine(scope))
 }

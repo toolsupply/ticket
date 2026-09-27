@@ -51,7 +51,7 @@ var Commands = []Command{
 	{Name: "reject", Summary: "Reject a nonterminal ticket with an outcome.", Options: []Flag{{"[ID] [OUTCOME] (positional)", "id|string", "Optional ticket ID and rejection outcome; omitted ID uses the current ticket."}, {"--outcome", "string", "Nonempty rejection outcome (required unless supplied positionally)."}, {"-m, --message", "string", "Append an entry to Work log."}, {"--input", "-", "Read a JSON object with outcome/message fields from stdin."}}, Examples: []string{"ticket reject 20260913-00001 \"No longer needed\" -m \"Closing after review\"", "ticket reject \"No longer needed\""}},
 	{Name: "check", Summary: "Validate ticket metadata and relationship graphs.", Options: []Flag{{"--active", "bool", "Validate active tickets only; referenced archived tickets still resolve."}}, Examples: []string{"ticket check", "ticket check --active", "ticket check --active -j"}},
 	{Name: "actor", Summary: "Show the effective actor identity.", Examples: []string{"ticket actor", "ticket actor -j"}},
-	{Name: "info", Summary: "Show selected repository metadata.", Examples: []string{"ticket info", "ticket info -j"}},
+	{Name: "info", Summary: "Show selected repository metadata, including its stable repository ID.", Examples: []string{"ticket info", "ticket info -j"}},
 	{Name: "version", Summary: "Report version, API version, and storage version.", Examples: []string{"ticket version"}},
 	{Name: "help", Summary: "Show help for one command, or list commands.", Options: []Flag{{"COMMAND (positional)", "command", "Command to describe."}}, Examples: []string{"ticket help", "ticket help create"}},
 }

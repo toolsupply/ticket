@@ -44,15 +44,18 @@ func TestInitIdempotent(t *testing.T) {
 		t.Fatalf(".gitignore missing: %v", err)
 	}
 	configBytes, err := os.ReadFile(filepath.Join(dir, "config.json"))
-	if err != nil || string(configBytes) != "{\"format_version\":1}\n" {
+	if err != nil {
 		t.Fatalf("config bytes=%q err=%v", configBytes, err)
 	}
 	cfg, err := LoadConfig(dir)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.FormatVersion != 1 {
+	if cfg.FormatVersion != 1 || !validRepositoryID(cfg.ID) {
 		t.Fatalf("format version=%d", cfg.FormatVersion)
+	}
+	if !bytes.Contains(configBytes, []byte(`"id":"`+cfg.ID+`"`)) {
+		t.Fatalf("config does not persist repository ID %q: %s", cfg.ID, configBytes)
 	}
 	// Second init: no change.
 	created2, err := InitRoot(dir)

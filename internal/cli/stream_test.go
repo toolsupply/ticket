@@ -192,7 +192,7 @@ func TestJSONStreamInfoResponseAndRecovery(t *testing.T) {
 		t.Fatalf("info stream responses=%d output=%q", len(responses), out)
 	}
 	info := responses[0]
-	if info["path"] != filepath.Join(dir, "tickets") || info["name"] != "Stream repository" || info["format_version"] != float64(1) || info["storage_version"] != float64(1) || info["scope"] != nil {
+	if info["path"] != filepath.Join(dir, "tickets") || info["name"] != "Stream repository" || info["id"] == "" || info["format_version"] != float64(1) || info["storage_version"] != float64(1) || info["scope"] != nil {
 		t.Fatalf("info stream response: %v", info)
 	}
 	if responses[1]["version"] != Version {

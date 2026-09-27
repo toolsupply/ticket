@@ -135,10 +135,12 @@ func applyWatchTagFilters(ctx *commandContext, options *watchOptions) error {
 }
 
 func runWatchLoop(ctx *commandContext, options watchOptions, done <-chan struct{}) error {
-	root, err := ctx.discoverRoot()
+	st, _, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
 		return err
 	}
+	root := st.Root
+	st.Close()
 	marker, err := store.ChangeState(root)
 	if err != nil {
 		return watchIOError(err)
@@ -192,7 +194,7 @@ func watchIOError(err error) error {
 }
 
 func watchSnapshotTickets(cwd, root string) (map[string]watchSnapshot, error) {
-	st, err := store.Open(cwd, store.OpenOptions{Root: root})
+	st, err := store.Open(cwd, store.OpenOptions{Root: root, DeferRepositoryIDBackfill: true})
 	if err != nil {
 		return nil, err
 	}

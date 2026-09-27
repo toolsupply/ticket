@@ -34,10 +34,12 @@ var (
 
 const maxDeletionStageAttempts = 16
 
-// OpenOptions injects the ID source used for ticket creation tests.
+// OpenOptions injects the ID source used for ticket creation tests and controls
+// whether Open defers legacy repository-ID backfill.
 type OpenOptions struct {
-	IDSource identity.IDSource
-	Root     string
+	IDSource                  identity.IDSource
+	Root                      string
+	DeferRepositoryIDBackfill bool
 }
 
 func (o OpenOptions) withDefaults() OpenOptions {
@@ -77,6 +79,16 @@ func Open(cwd string, o OpenOptions) (*Store, error) {
 		rootHandle.Close()
 		return nil, err
 	}
+	if o.DeferRepositoryIDBackfill {
+		cfg, err = loadConfigRoot(rootHandle)
+	} else {
+		cfg, _, err = ensureRepositoryIDRoot(rootHandle)
+	}
+	if err != nil {
+		lk.Release()
+		rootHandle.Close()
+		return nil, err
+	}
 	return &Store{
 		Root: root,
 		Cfg:  cfg,
@@ -111,7 +123,8 @@ func (st *Store) openRoot() (*os.Root, bool, error) {
 // RevalidateAfterSync verifies the repository's runtime state after an SCM
 // operation that may have replaced files under the ticket root. If the live
 // lock file changed, it acquires the replacement before releasing the old
-// lock so callers never continue without a lock over the current path.
+// lock so callers never continue without a lock over the current path. It
+// reloads config.json but leaves repository-ID assurance to the caller.
 func (st *Store) RevalidateAfterSync() error {
 	if st == nil || st.Lock == nil || st.Lock.file == nil {
 		return contract.NewError(contract.ErrInvalidRepository,
@@ -161,6 +174,22 @@ func (st *Store) RevalidateAfterSync() error {
 	}
 	st.Cfg = cfg
 	return nil
+}
+
+// EnsureRepositoryID reloads and validates config.json, atomically backfills a
+// missing repository ID, and reports whether config.json changed. The caller
+// must hold an open Store lock while invoking it.
+func (st *Store) EnsureRepositoryID() (id string, changed bool, err error) {
+	if st == nil || st.Lock == nil || st.Lock.file == nil || st.root == nil {
+		return "", false, contract.NewError(contract.ErrInvalidRepository,
+			"Ticket repository lock is not active.", nil)
+	}
+	cfg, changed, err := ensureRepositoryIDRoot(st.root)
+	if err != nil {
+		return "", false, err
+	}
+	st.Cfg = cfg
+	return cfg.ID, changed, nil
 }
 
 func validateLiveLocalRoot(root *os.Root) (os.FileInfo, error) {
@@ -505,13 +534,17 @@ func InitRoot(root string) (created bool, err error) {
 	if err := checkInitTarget(abs); err != nil {
 		return false, err
 	}
+	repositoryID, err := newRepositoryID()
+	if err != nil {
+		return false, err
+	}
 	files := []struct {
 		name string
 		data []byte
 	}{
 		{".gitignore", []byte(".local/\n")},
 		{"README.md", initREADME()},
-		{"config.json", writeConfig()},
+		{"config.json", writeConfig(Config{FormatVersion: 1, ID: repositoryID})},
 	}
 	for _, f := range files {
 		if err := writeFileAtomic(filepath.Join(abs, f.name), f.data); err != nil {

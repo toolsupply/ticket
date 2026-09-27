@@ -49,6 +49,15 @@ func installFakeSCM(t testingT, dir, mode string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func installFakeSVN(t testingT, dir, mode string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installTestHelper(t, filepath.Join(dir, "svn"), mode)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 type testingT interface {
 	Helper()
 	Fatal(...any)
@@ -135,6 +144,79 @@ func runTestHelper(mode string) int {
 			if os.Getenv("FAIL_COMMIT") == "1" {
 				return 1
 			}
+			if err := touchHelperFile(os.Getenv("SCM_STATE")); err != nil {
+				return 2
+			}
+		}
+	case "scm-repository-id-retry":
+		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		if fakeGitProbe(args) {
+			return 0
+		}
+		state := os.Getenv("SCM_STATE")
+		switch firstArg(args) {
+		case "status":
+			if string(readHelperFile(state)) == "staged" {
+				fmt.Fprintln(os.Stdout, " M config.json")
+			}
+		case "rev-list":
+			if string(readHelperFile(state)) == "committed" {
+				fmt.Fprintln(os.Stdout, "1")
+			} else {
+				fmt.Fprintln(os.Stdout, "0")
+			}
+		case "add":
+			if string(readHelperFile(state)) == "committed" {
+				break
+			}
+			if err := os.WriteFile(state, []byte("staged"), 0o600); err != nil {
+				return 2
+			}
+		case "diff":
+			if string(readHelperFile(state)) == "committed" {
+				return 0
+			}
+			return 1
+		case "commit":
+			if os.Getenv("FAIL_COMMIT") == "1" {
+				return 1
+			}
+			if err := os.WriteFile(state, []byte("committed"), 0o600); err != nil {
+				return 2
+			}
+		case "push":
+			if os.Getenv("FAIL_PUSH") == "1" {
+				return 1
+			}
+			if err := os.Remove(state); err != nil && !os.IsNotExist(err) {
+				return 2
+			}
+		}
+	case "scm-backfill-clear-marker-failure":
+		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		if fakeGitProbe(args) || fakeGitUpstream(args) {
+			return 0
+		}
+		switch firstArg(args) {
+		case "diff":
+			return 1
+		case "push":
+			marker := filepath.Join(".local", "repository-id-backfill-pending")
+			if err := os.Remove(marker); err != nil {
+				return 2
+			}
+			if err := os.Mkdir(marker, 0o700); err != nil {
+				return 2
+			}
+		}
+	case "scm-svn-lifecycle":
+		appendHelperLog(os.Getenv("SCM_LOG"), strings.Join(args, " "))
+		switch firstArg(args) {
+		case "status":
+			if len(args) > 1 && args[1] == "--quiet" {
+				fmt.Fprintln(os.Stdout, "M       config.json")
+			}
+		case "commit":
 			if err := touchHelperFile(os.Getenv("SCM_STATE")); err != nil {
 				return 2
 			}
@@ -298,6 +380,11 @@ func fileExists(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func readHelperFile(path string) []byte {
+	data, _ := os.ReadFile(path)
+	return data
 }
 
 func touchHelperFile(path string) error {

@@ -110,14 +110,27 @@ func (g *globalOpts) check(cwd string) error {
 }
 
 func (g *globalOpts) openStore(cwd string) (*store.Store, error) {
+	st, _, err := g.openStoreForSCM(cwd)
+	return st, err
+}
+
+func (g *globalOpts) openStoreForSCM(cwd string) (*store.Store, scm.Backend, error) {
 	if err := g.loadConfig(cwd); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	st, err := store.Open(cwd, store.OpenOptions{Root: g.selectedRoot()})
+	kind, mode := g.effectiveSCM()
+	backend, err := scm.ConfigureValues(kind, mode)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return st, nil
+	st, err := store.Open(cwd, store.OpenOptions{
+		Root:                      g.selectedRoot(),
+		DeferRepositoryIDBackfill: backend != nil,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return st, backend, nil
 }
 
 func (g *globalOpts) actorToken() (string, error) {
@@ -263,14 +276,8 @@ func relativePathWithinRoot(rel string) bool {
 }
 
 func openSynchronizedStore(g *globalOpts, cwd string) (*store.Store, scm.Backend, error) {
-	st, err := g.openStore(cwd)
+	st, backend, err := g.openStoreForSCM(cwd)
 	if err != nil {
-		return nil, nil, err
-	}
-	kind, mode := g.effectiveSCM()
-	backend, err := scm.ConfigureValues(kind, mode)
-	if err != nil {
-		st.Close()
 		return nil, nil, err
 	}
 	if backend != nil {
@@ -290,8 +297,62 @@ func openSynchronizedStore(g *globalOpts, cwd string) (*store.Store, scm.Backend
 			st.Close()
 			return nil, nil, err
 		}
+		pending, err := st.RepositoryIDBackfillPending()
+		if err != nil {
+			st.Close()
+			return nil, nil, err
+		}
+		if st.Cfg.ID == "" && !pending {
+			if err := st.MarkRepositoryIDBackfillPending(); err != nil {
+				st.Close()
+				return nil, nil, err
+			}
+			pending = true
+		}
+		_, changed, err := st.EnsureRepositoryID()
+		if err != nil {
+			st.Close()
+			return nil, nil, err
+		}
+		pending = pending || changed
+		if pending {
+			if err := persistRepositoryID(backend, st); err != nil {
+				st.Close()
+				return nil, nil, err
+			}
+			if err := st.ClearRepositoryIDBackfillPending(); err != nil {
+				wrapped := repositoryIDBackfillError("retry marker cleanup", st.Cfg.ID,
+					"Cannot clear repository-ID migration state: "+scmErrorMessage(err))
+				st.Close()
+				return nil, nil, wrapped
+			}
+		}
 	}
 	return st, backend, nil
+}
+
+func persistRepositoryID(backend scm.Backend, st *store.Store) error {
+	if err := backend.Commit(st.Root, "ticket: repository ID backfill", []string{"config.json"}); err != nil {
+		return repositoryIDBackfillError("commit", st.Cfg.ID,
+			"Repository-ID migration SCM commit failed: "+scmErrorMessage(err))
+	}
+	if err := backend.Publish(st.Root); err != nil {
+		return repositoryIDBackfillError("publish", st.Cfg.ID,
+			"Repository-ID migration SCM publish failed: "+scmErrorMessage(err))
+	}
+	return nil
+}
+
+func repositoryIDBackfillError(stage, id, message string) error {
+	details := map[string]any{
+		"mutation_applied":               true,
+		"repository_id_backfill_pending": true,
+		"repository_id_backfill_stage":   stage,
+	}
+	if id != "" {
+		details["id"] = id
+	}
+	return contract.NewError(contract.ErrIOError, message, details)
 }
 
 func persistMutation(backend scm.Backend, st *store.Store, cmd string, result any) error {

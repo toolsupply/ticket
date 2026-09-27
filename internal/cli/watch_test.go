@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/toolsupply/ticket/internal/store"
 )
 
 func TestDeriveWatchEventsUsesConservativeSemanticKinds(t *testing.T) {
@@ -339,6 +341,40 @@ func TestWatchUsesConfiguredScopeRoot(t *testing.T) {
 	}
 	if err := runWatchLoop(ctx, watchOptions{}, done); err != nil {
 		t.Fatalf("scoped watch: %v", err)
+	}
+}
+
+func TestWatchSynchronizesBeforeBackfillingLegacyRepositoryID(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	configPath := filepath.Join(dir, "tickets", "config.json")
+	legacy := []byte("{\"format_version\":1}\n")
+	if err := os.WriteFile(configPath, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "scm.log")
+	installFakeSCM(t, filepath.Join(dir, "bin"), "scm-lifecycle")
+	t.Setenv("SCM_LOG", logPath)
+	t.Setenv("TICKET_SCM", "git")
+	t.Setenv("TICKET_SCM_MODE", "sync")
+	done := make(chan struct{})
+	close(done)
+	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}}
+	if err := runWatchLoop(ctx, watchOptions{}, done); err != nil {
+		t.Fatalf("watch startup: %v", err)
+	}
+	cfg, err := store.LoadConfig(filepath.Join(dir, "tickets"))
+	if err != nil || cfg.ID == "" {
+		t.Fatalf("watch did not backfill repository ID: config=%+v err=%v", cfg, err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	if strings.Index(log, "pull --ff-only") < 0 || strings.Index(log, "pull --ff-only") > strings.Index(log, "add -- config.json") {
+		t.Fatalf("watch backfilled before SCM update: %q", log)
 	}
 }
 
