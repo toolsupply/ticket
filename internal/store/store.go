@@ -481,7 +481,14 @@ func (st *Store) TaskModTime(id string) (time.Time, error) {
 	return info.ModTime(), nil
 }
 
-// InitRoot creates (or idempotently accepts) a ticket repository at root.
+// InitRoot creates (or idempotently accepts) an unnamed ticket repository at root.
+func InitRoot(root string) (created bool, err error) {
+	return InitRootWithName(root, "")
+}
+
+// InitRootWithName creates (or idempotently accepts) a ticket repository at
+// root. name is stored only when this call creates the repository; an existing
+// valid repository is left untouched.
 // The CLI calls it only for the discovered current-project tickets path.
 // init is the one command that needs no existing repository and
 // no actor. It creates only manager-owned paths:
@@ -490,7 +497,7 @@ func (st *Store) TaskModTime(id string) (time.Time, error) {
 // An existing valid same-format repository returns created=false and
 // is left untouched. A non-empty non-repository target and an unknown
 // format are failures, never adoption.
-func InitRoot(root string) (created bool, err error) {
+func InitRootWithName(root, name string) (created bool, err error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return false, contract.NewError(contract.ErrInvalidArgument,
@@ -544,7 +551,7 @@ func InitRoot(root string) (created bool, err error) {
 	}{
 		{".gitignore", []byte(".local/\n")},
 		{"README.md", initREADME()},
-		{"config.json", writeConfig(Config{FormatVersion: 1, ID: repositoryID})},
+		{"config.json", writeConfig(Config{FormatVersion: 1, Name: name, ID: repositoryID})},
 	}
 	for _, f := range files {
 		if err := writeFileAtomic(filepath.Join(abs, f.name), f.data); err != nil {

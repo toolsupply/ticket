@@ -5,7 +5,6 @@ package store
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"syscall"
 	"time"
@@ -21,16 +20,21 @@ func publishReplaceRoot(root *os.Root, target, tmp string) error {
 	// managed contract requires complete replacement and preservation of the
 	// canonical target when publication fails. Concurrent opens validate
 	// config.json before taking the repository lock, so Windows may briefly
-	// deny replacement while those bounded reads drain. Retry only that
-	// permission failure, keeping the operation rooted and atomic.
+	// deny replacement while those bounded reads drain. Retry only the
+	// transient sharing and access-denied errors, keeping replacement rooted
+	// and atomic.
 	const retries = 5
 	for attempt := 0; ; attempt++ {
 		err := rootRename(root, tmp, target)
-		if err == nil || !errors.Is(err, fs.ErrPermission) || attempt == retries {
+		if err == nil || !transientWindowsReplaceError(err) || attempt == retries {
 			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 	}
+}
+
+func transientWindowsReplaceError(err error) bool {
+	return errors.Is(err, syscall.ERROR_ACCESS_DENIED) || errors.Is(err, windowsErrorSharingViolation)
 }
 
 func recoverFailedReplacement(target, tmp string) error {

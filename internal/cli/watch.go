@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +17,10 @@ import (
 	"github.com/toolsupply/ticket/internal/store"
 )
 
-const watchPollInterval = 250 * time.Millisecond
+const (
+	watchPollInterval        = 500 * time.Millisecond
+	watchFingerprintInterval = 30 * time.Second
+)
 
 type watchEvent struct {
 	Time    time.Time `json:"-"`
@@ -54,6 +59,7 @@ type watchOptions struct {
 	WithoutTags []string
 	Parent      string
 	Events      []string
+	Ready       bool
 }
 
 func cmdWatch(ctx *commandContext, args []string) error {
@@ -62,6 +68,8 @@ func cmdWatch(ctx *commandContext, args []string) error {
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
 	var options watchOptions
+	var jsonOption bool
+	p.boolValue("json", &jsonOption)
 	p.str("actor", &options.Actor)
 	p.str("ticket", &options.Ticket)
 	p.str("state", &options.State)
@@ -69,14 +77,21 @@ func cmdWatch(ctx *commandContext, args []string) error {
 	p.repeat("without-tag", &options.WithoutTags)
 	p.str("parent", &options.Parent)
 	p.repeat("event", &options.Events)
+	p.boolValue("ready", &options.Ready)
 	if err := p.parse(args); err != nil {
 		return err
+	}
+	if jsonOption {
+		ctx.json = true
 	}
 	if helpFlag {
 		return emitHelpCommand(ctx, "watch")
 	}
 	if len(p.positionals) > 0 {
 		return contract.NewError(contract.ErrInvalidArgument, "Command watch accepts no positional arguments.", nil)
+	}
+	if options.Ready && !ctx.json {
+		return contract.NewError(contract.ErrInvalidArgument, "Flag --ready requires JSON mode; use ticket watch -j --ready.", nil)
 	}
 	if ctx.session != nil {
 		return contract.NewError(contract.ErrInvalidArgument,
@@ -135,45 +150,154 @@ func applyWatchTagFilters(ctx *commandContext, options *watchOptions) error {
 }
 
 func runWatchLoop(ctx *commandContext, options watchOptions, done <-chan struct{}) error {
+	return runWatchLoopWith(ctx, options, done, watchLoopTiming{
+		marker: watchPollInterval, fingerprint: watchFingerprintInterval, phaseFingerprint: true,
+	}, watchLoopOps{
+		changeState: store.ChangeState,
+		fingerprint: watchMetadataFingerprint,
+		snapshot:    watchSnapshotTickets,
+		ready:       func(repositoryID string) error { return emitWatchReady(ctx, repositoryID) },
+	})
+}
+
+type watchLoopTiming struct {
+	marker           time.Duration
+	fingerprint      time.Duration
+	phaseFingerprint bool
+}
+
+type watchLoopOps struct {
+	changeState func(root string) (string, error)
+	fingerprint func(root string) ([32]byte, error)
+	snapshot    func(cwd, root string) (map[string]watchSnapshot, error)
+	ready       func(repositoryID string) error
+}
+
+func runWatchLoopWith(ctx *commandContext, options watchOptions, done <-chan struct{}, timing watchLoopTiming, ops watchLoopOps) error {
 	st, _, err := openSynchronizedStore(&ctx.globalOpts, ctx.cwd)
 	if err != nil {
 		return err
 	}
 	root := st.Root
+	repositoryID := st.Cfg.ID
 	st.Close()
-	marker, err := store.ChangeState(root)
+	marker, err := ops.changeState(root)
 	if err != nil {
 		return watchIOError(err)
 	}
-	before, err := watchSnapshotTickets(ctx.cwd, root)
+	fingerprint, fingerprintErr := ops.fingerprint(root)
+	fingerprintKnown := fingerprintErr == nil
+	before, err := ops.snapshot(ctx.cwd, root)
 	if err != nil {
 		return err
 	}
 	// A mutation racing the initial read must not be mistaken for startup
 	// history. Refresh once when the marker changed during the snapshot.
-	if latest, readErr := store.ChangeState(root); readErr != nil {
+	if latest, readErr := ops.changeState(root); readErr != nil {
 		return watchIOError(readErr)
 	} else if latest != marker {
-		before, err = watchSnapshotTickets(ctx.cwd, root)
+		before, err = ops.snapshot(ctx.cwd, root)
 		if err != nil {
 			return err
 		}
 		marker = latest
 	}
-	for {
+	if options.Ready {
 		select {
 		case <-done:
 			return nil
-		case <-time.After(watchPollInterval):
+		default:
 		}
-		current, err := store.ChangeState(root)
+		if ops.ready == nil {
+			return contract.NewError(contract.ErrInternalError, "Watch readiness output is unavailable.", nil)
+		}
+		if err := ops.ready(repositoryID); err != nil {
+			return err
+		}
+	}
+	markerTicker := time.NewTicker(timing.marker)
+	defer markerTicker.Stop()
+	var fingerprintPhaseTimer *time.Timer
+	var fingerprintTicker *time.Ticker
+	var fingerprintC <-chan time.Time
+	if timing.phaseFingerprint {
+		phaseKey := repositoryID
+		if phaseKey == "" {
+			phaseKey = root
+		}
+		fingerprintPhaseTimer = time.NewTimer(watchFingerprintPhase(phaseKey, timing.fingerprint))
+		fingerprintC = fingerprintPhaseTimer.C
+	} else {
+		fingerprintTicker = time.NewTicker(timing.fingerprint)
+		fingerprintC = fingerprintTicker.C
+	}
+	defer func() {
+		if fingerprintPhaseTimer != nil {
+			fingerprintPhaseTimer.Stop()
+		}
+		if fingerprintTicker != nil {
+			fingerprintTicker.Stop()
+		}
+	}()
+	for {
+		markerDue, fingerprintDue := false, false
+		select {
+		case <-done:
+			return nil
+		case <-markerTicker.C:
+			markerDue = true
+		case <-fingerprintC:
+			fingerprintDue = true
+		}
+		// Consume coincident timer signals in one cycle so one observation of
+		// both sources produces only one snapshot refresh.
+		if !markerDue {
+			select {
+			case <-markerTicker.C:
+				markerDue = true
+			default:
+			}
+		}
+		if !fingerprintDue {
+			select {
+			case <-fingerprintC:
+				fingerprintDue = true
+			default:
+			}
+		}
+		if fingerprintDue && fingerprintPhaseTimer != nil {
+			fingerprintPhaseTimer.Stop()
+			fingerprintPhaseTimer = nil
+			fingerprintTicker = time.NewTicker(timing.fingerprint)
+			fingerprintC = fingerprintTicker.C
+		}
+		markerCandidate, err := ops.changeState(root)
 		if err != nil {
 			return watchIOError(err)
 		}
-		if current == marker {
+		markerChanged := markerCandidate != marker
+
+		// A marker-triggered refresh also captures a fingerprint candidate
+		// before its snapshot. This lets that refresh establish a matching
+		// baseline without fingerprinting on every idle marker poll.
+		var fingerprintCandidate [32]byte
+		fingerprintCandidateKnown := false
+		fingerprintChanged := false
+		if fingerprintDue || markerChanged {
+			if candidate, fingerprintErr := ops.fingerprint(root); fingerprintErr == nil {
+				fingerprintCandidate = candidate
+				fingerprintCandidateKnown = true
+				fingerprintChanged = !fingerprintKnown || candidate != fingerprint
+			}
+		}
+		if !markerChanged && !fingerprintChanged {
+			marker = markerCandidate
+			if fingerprintCandidateKnown {
+				fingerprint, fingerprintKnown = fingerprintCandidate, true
+			}
 			continue
 		}
-		after, err := watchSnapshotTickets(ctx.cwd, root)
+		after, err := ops.snapshot(ctx.cwd, root)
 		if err != nil {
 			return err
 		}
@@ -185,8 +309,52 @@ func runWatchLoop(ctx *commandContext, options watchOptions, done <-chan struct{
 				return err
 			}
 		}
-		before, marker = after, current
+		before, marker = after, markerCandidate
+		if fingerprintCandidateKnown {
+			fingerprint, fingerprintKnown = fingerprintCandidate, true
+		}
 	}
+}
+
+func watchFingerprintPhase(repositoryIdentity string, interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	digest := sha256.Sum256([]byte(repositoryIdentity))
+	phase := binary.BigEndian.Uint64(digest[:8]) % uint64(interval)
+	return time.Duration(phase)
+}
+
+func watchMetadataFingerprint(root string) ([32]byte, error) {
+	entries, err := store.EnumerateActiveWatchMetadata(root)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return fingerprintWatchMetadata(entries), nil
+}
+
+func fingerprintWatchMetadata(entries []store.WatchMetadata) [32]byte {
+	h := sha256.New()
+	var field [8]byte
+	writeBytes := func(value []byte) {
+		binary.BigEndian.PutUint64(field[:], uint64(len(value)))
+		_, _ = h.Write(field[:])
+		_, _ = h.Write(value)
+	}
+	for _, entry := range entries {
+		writeBytes([]byte(entry.Path))
+		binary.BigEndian.PutUint64(field[:], uint64(entry.Type))
+		_, _ = h.Write(field[:])
+		binary.BigEndian.PutUint64(field[:], uint64(entry.Size))
+		_, _ = h.Write(field[:])
+		binary.BigEndian.PutUint64(field[:], uint64(entry.ModTime.Unix()))
+		_, _ = h.Write(field[:])
+		binary.BigEndian.PutUint64(field[:], uint64(entry.ModTime.Nanosecond()))
+		_, _ = h.Write(field[:])
+	}
+	var fingerprint [32]byte
+	copy(fingerprint[:], h.Sum(nil))
+	return fingerprint
 }
 
 func watchIOError(err error) error {
@@ -471,6 +639,16 @@ func emitWatchJSON(w io.Writer, event watchEvent) error {
 		From    string  `json:"from,omitempty"`
 		To      string  `json:"to,omitempty"`
 	}{event.Time.Format(time.RFC3339), event.Actor, event.Ticket, event.Title, event.Event, event.Message, event.State, event.From, event.To})
+}
+
+func emitWatchReady(ctx *commandContext, repositoryID string) error {
+	if err := emitJSON(watchOutput(ctx), struct {
+		Type         string `json:"type"`
+		RepositoryID string `json:"repository_id"`
+	}{"ready", repositoryID}); err != nil {
+		return contract.NewError(contract.ErrIOError, "Cannot write watch readiness record: "+err.Error(), nil)
+	}
+	return nil
 }
 
 func watchOutput(ctx *commandContext) io.Writer {

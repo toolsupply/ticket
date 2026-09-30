@@ -3,6 +3,8 @@
 package store
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -104,6 +106,193 @@ func TestWindowsRootReplaceRetriesTransientAccessDenied(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil || string(data) != "new\n" {
 		t.Fatalf("replacement target=%q err=%v", data, err)
+	}
+}
+
+func TestWindowsRootReplaceRetriesTransientSharingViolation(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json.new"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+
+	original := rootRename
+	defer func() { rootRename = original }()
+	attempts := 0
+	rootRename = func(root *os.Root, oldname, newname string) error {
+		attempts++
+		if attempts < 3 {
+			return windowsErrorSharingViolation
+		}
+		return original(root, oldname, newname)
+	}
+	if err := publishReplaceRoot(root, "config.json", "config.json.new"); err != nil {
+		t.Fatalf("publish after transient sharing violation: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("root rename attempts=%d want 3", attempts)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil || string(data) != "new\n" {
+		t.Fatalf("replacement target=%q err=%v", data, err)
+	}
+}
+
+func TestWindowsRootReplaceDoesNotRetryOtherPermissionErrors(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+	original := rootRename
+	defer func() { rootRename = original }()
+	attempts := 0
+	rootRename = func(*os.Root, string, string) error {
+		attempts++
+		return fs.ErrPermission
+	}
+	err = publishReplaceRoot(root, "config.json", "config.json.new")
+	if !errors.Is(err, fs.ErrPermission) || attempts != 1 {
+		t.Fatalf("replacement error=%v attempts=%d, want permission error after one attempt", err, attempts)
+	}
+}
+
+func TestWindowsBoundedReadRetriesSharingViolation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metadata")
+	if err := os.WriteFile(path, []byte("bounded metadata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	originalPathOpen, originalRootOpen, originalSleep := windowsBoundedPathOpen, windowsBoundedRootOpen, windowsBoundedRetrySleep
+	defer func() {
+		windowsBoundedPathOpen = originalPathOpen
+		windowsBoundedRootOpen = originalRootOpen
+		windowsBoundedRetrySleep = originalSleep
+	}()
+	windowsBoundedRetrySleep = func(time.Duration) {}
+
+	t.Run("path open", func(t *testing.T) {
+		attempts := 0
+		windowsBoundedPathOpen = func(path string) (*os.File, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, windowsErrorSharingViolation
+			}
+			return originalPathOpen(path)
+		}
+		data, err := ReadBoundedFile(path, 100)
+		if err != nil || string(data) != "bounded metadata" {
+			t.Fatalf("bounded path read=%q err=%v", data, err)
+		}
+		if attempts != 3 {
+			t.Fatalf("path open attempts=%d want 3", attempts)
+		}
+	})
+
+	t.Run("rooted open", func(t *testing.T) {
+		attempts := 0
+		windowsBoundedRootOpen = func(root *os.Root, name string, flags int, perm os.FileMode) (*os.File, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, windowsErrorSharingViolation
+			}
+			return originalRootOpen(root, name, flags, perm)
+		}
+		data, err := ReadBoundedRoot(root, "metadata", 100)
+		if err != nil || string(data) != "bounded metadata" {
+			t.Fatalf("bounded rooted read=%q err=%v", data, err)
+		}
+		if attempts != 3 {
+			t.Fatalf("rooted open attempts=%d want 3", attempts)
+		}
+	})
+}
+
+func TestWindowsBoundedReadDoesNotRetryOtherErrors(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	originalPathOpen, originalRootOpen, originalSleep := windowsBoundedPathOpen, windowsBoundedRootOpen, windowsBoundedRetrySleep
+	defer func() {
+		windowsBoundedPathOpen = originalPathOpen
+		windowsBoundedRootOpen = originalRootOpen
+		windowsBoundedRetrySleep = originalSleep
+	}()
+	windowsBoundedRetrySleep = func(time.Duration) { t.Fatal("non-sharing error was retried") }
+	wantErr := fs.ErrPermission
+
+	attempts := 0
+	windowsBoundedPathOpen = func(string) (*os.File, error) {
+		attempts++
+		return nil, wantErr
+	}
+	if _, err := ReadBoundedFile(filepath.Join(t.TempDir(), "unused"), 100); !errors.Is(err, wantErr) || attempts != 1 {
+		t.Fatalf("path open error=%v attempts=%d, want original error after one attempt", err, attempts)
+	}
+
+	attempts = 0
+	windowsBoundedRootOpen = func(*os.Root, string, int, os.FileMode) (*os.File, error) {
+		attempts++
+		return nil, wantErr
+	}
+	if _, err := ReadBoundedRoot(root, "unused", 100); !errors.Is(err, wantErr) || attempts != 1 {
+		t.Fatalf("rooted open error=%v attempts=%d, want original error after one attempt", err, attempts)
+	}
+}
+
+func TestWindowsBoundedReadStopsAfterSharingRetries(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	originalPathOpen, originalRootOpen, originalSleep := windowsBoundedPathOpen, windowsBoundedRootOpen, windowsBoundedRetrySleep
+	defer func() {
+		windowsBoundedPathOpen = originalPathOpen
+		windowsBoundedRootOpen = originalRootOpen
+		windowsBoundedRetrySleep = originalSleep
+	}()
+	windowsBoundedRetrySleep = func(time.Duration) {}
+
+	attempts := 0
+	windowsBoundedPathOpen = func(string) (*os.File, error) {
+		attempts++
+		return nil, windowsErrorSharingViolation
+	}
+	if _, err := ReadBoundedFile(filepath.Join(t.TempDir(), "unused"), 100); err != windowsErrorSharingViolation {
+		t.Fatalf("persistent path sharing error=%v, want original sharing violation", err)
+	}
+	if want := windowsBoundedReadOpenRetries + 1; attempts != want {
+		t.Fatalf("persistent path open attempts=%d want %d", attempts, want)
+	}
+
+	attempts = 0
+	windowsBoundedRootOpen = func(*os.Root, string, int, os.FileMode) (*os.File, error) {
+		attempts++
+		return nil, windowsErrorSharingViolation
+	}
+	if _, err := ReadBoundedRoot(root, "unused", 100); err != windowsErrorSharingViolation {
+		t.Fatalf("persistent rooted sharing error=%v, want original sharing violation", err)
+	}
+	if want := windowsBoundedReadOpenRetries + 1; attempts != want {
+		t.Fatalf("persistent rooted open attempts=%d want %d", attempts, want)
 	}
 }
 

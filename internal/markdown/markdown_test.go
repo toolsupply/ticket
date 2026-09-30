@@ -206,6 +206,77 @@ func TestMetadataRestrictions(t *testing.T) {
 	}
 }
 
+func TestVisibleMetadataPreservesStringTypesAndQuotedValues(t *testing.T) {
+	body := []byte("# T\n\n" +
+		"- State: true\n" +
+		"- Priority: P3\n" +
+		"- Assignee: 'false'\n" +
+		"- Parent: 123\n" +
+		"- Tags: false, true, null, 123\n" +
+		"- Depends on: false, true, null, 123\n" +
+		"- Blocked reason: [workers] {future: value}\n\n" +
+		"## Objective\nwork\n")
+	parsed := ParseBody(body)
+	if hasError(parsed) || hasFMError(parsed.Metadata) {
+		t.Fatalf("visible metadata diagnostics: body=%v metadata=%v", parsed.Diagnostics, parsed.Metadata.Diagnostics)
+	}
+	for _, field := range []struct {
+		key, want string
+	}{
+		{"state", "true"},
+		{"assignee", "false"},
+		{"parent", "123"},
+		{"blocked_reason", "[workers] {future: value}"},
+	} {
+		got, ok := parsed.Metadata.Get(field.key)
+		if !ok || got != field.want {
+			t.Errorf("%s = %#v (%t), want %q", field.key, got, ok, field.want)
+		}
+	}
+	if got, ok := parsed.Metadata.Get("priority"); !ok || got != 3 {
+		t.Errorf("priority = %#v (%t), want integer 3", got, ok)
+	}
+	for _, key := range []string{"tags", "depends_on"} {
+		got, ok := parsed.Metadata.Get(key)
+		want := []string{"false", "true", "null", "123"}
+		values, isStrings := got.([]string)
+		if !ok || !isStrings || len(values) != len(want) {
+			t.Errorf("%s = %#v (%t), want %q", key, got, ok, want)
+			continue
+		}
+		for i := range want {
+			if values[i] != want[i] {
+				t.Errorf("%s[%d] = %q, want %q", key, i, values[i], want[i])
+			}
+		}
+	}
+
+	quoted := ParseBody([]byte("# T\n\n- State: open\n- Blocked reason: \"[quoted] {text}\"\n"))
+	if got, _ := quoted.Metadata.Get("blocked_reason"); got != "[quoted] {text}" || hasFMError(quoted.Metadata) {
+		t.Fatalf("quoted visible string = %#v, diagnostics=%v", got, quoted.Metadata.Diagnostics)
+	}
+
+	// General metadata deliberately keeps its existing scalar coercion.
+	general := ParseMetadata([]byte("state: true\ntags: [bug, parser]\n"))
+	if state, _ := general.Get("state"); state != true {
+		t.Errorf("ParseMetadata state = %#v, want bool true", state)
+	}
+	if tags, _ := general.Get("tags"); strings.Join(tags.([]string), ",") != "bug,parser" {
+		t.Errorf("ParseMetadata tags unexpectedly changed: %#v", tags)
+	}
+}
+
+func TestVisibleMetadataMalformedQuoteUsesSourceLine(t *testing.T) {
+	parsed := ParseBody([]byte("# T\n\n- State: open\n- Blocked reason: \"unfinished\n"))
+	if len(parsed.Metadata.Diagnostics) != 1 {
+		t.Fatalf("metadata diagnostics = %v", parsed.Metadata.Diagnostics)
+	}
+	diagnostic := parsed.Metadata.Diagnostics[0]
+	if !diagnostic.IsError() || diagnostic.Code != "unsupported_metadata" || diagnostic.Line != 4 {
+		t.Fatalf("malformed quote diagnostic = %+v, want error on line 4", diagnostic)
+	}
+}
+
 // Section content span: exactly one trailing newline stripped.
 func TestSectionContentSpan(t *testing.T) {
 	body := "# T\n\n## Objective\nline1\nline2\n\n## Acceptance\n- [ ] one\n"

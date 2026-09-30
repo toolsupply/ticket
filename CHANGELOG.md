@@ -2,7 +2,22 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.2.3] - 2026-09-30
+
+### Added
+
+- Added `ticket init -n/--name` for creating named repositories.
+- Added `ticket watch -j --ready` for reliable orc handshake.
+
+### Changed
+
+- Fixed scalar coercion of string values in Markdown metadata parsing.
+- Fixed Windows symlink test portability.
+- Improved `ticket watch` performance and resource usage.
+
 ## [0.2.2] - 2026-09-27
+
+### Added
 
 - Added a generated stable ticket repository ID.
 
@@ -130,6 +145,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.2.3]: https://github.com/toolsupply/ticket/releases/tag/v0.2.3
 [0.2.2]: https://github.com/toolsupply/ticket/releases/tag/v0.2.2
 [0.2.1]: https://github.com/toolsupply/ticket/releases/tag/v0.2.1
 [0.2.0]: https://github.com/toolsupply/ticket/releases/tag/v0.2.0

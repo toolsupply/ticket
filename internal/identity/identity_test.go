@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"io/fs"
 	"testing"
 	"time"
 
@@ -28,6 +29,30 @@ func TestRandomSourceUsesTimestampIDFormat(t *testing.T) {
 	}
 	if _, err := src.ID("bad_"); err == nil {
 		t.Fatal("unsupported prefix accepted")
+	}
+}
+
+func TestClassifyActiveRootEntry(t *testing.T) {
+	tests := []struct {
+		name string
+		mode fs.FileMode
+		dir  bool
+		want identity.ActiveRootEntryKind
+	}{
+		{name: "20260929-00001", mode: fs.ModeDir, dir: true, want: identity.ActiveRootTicketDirectory},
+		{name: "20260929-0000x", mode: fs.ModeDir, dir: true, want: identity.ActiveRootMalformedTicketDirectory},
+		{name: "README.md", mode: fs.ModeSymlink, want: identity.ActiveRootSymlink},
+		{name: ".local", mode: fs.ModeDir, dir: true, want: identity.IgnoreActiveRootEntry},
+		{name: "archive", mode: fs.ModeDir, dir: true, want: identity.IgnoreActiveRootEntry},
+		{name: "README.md", mode: 0, want: identity.IgnoreActiveRootEntry},
+		{name: "unrelated", mode: fs.ModeDir, dir: true, want: identity.IgnoreActiveRootEntry},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := identity.ClassifyActiveRootEntry(test.name, test.mode, test.dir); got != test.want {
+				t.Fatalf("classification=%d, want %d", got, test.want)
+			}
+		})
 	}
 }
 

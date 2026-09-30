@@ -356,26 +356,120 @@ func parseVisibleMetadata(body []byte, lines []bodyLine, afterTitle int) (*Metad
 			}
 			valueRaw = valueRaw[1:]
 		}
-		if key == "tags" || key == "depends_on" {
-			valueRaw = "[" + valueRaw + "]"
+		var value any
+		var parseErr error
+		switch key {
+		case "priority":
+			parsed := ParseMetadata([]byte(key + ": " + valueRaw + "\n"))
+			if len(parsed.Diagnostics) > 0 || len(parsed.Entries) != 1 {
+				for _, d := range parsed.Diagnostics {
+					f.Diagnostics = append(f.Diagnostics, Diagnostic{d.Severity, d.Code, lineNumber(lines, line.start), d.Message})
+				}
+				if len(parsed.Diagnostics) == 0 {
+					f.errAt("unsupported_metadata", lineNumber(lines, line.start), "Metadata value for %q is invalid.", label)
+				}
+				end = line.end
+				continue
+			}
+			value = parsed.Entries[0].Value
+		case "tags", "depends_on":
+			value, parseErr = parseVisibleStringList(valueRaw)
+		default:
+			value, parseErr = parseVisibleString(valueRaw)
 		}
-		parsed := ParseMetadata([]byte(key + ": " + valueRaw + "\n"))
-		if len(parsed.Diagnostics) > 0 || len(parsed.Entries) != 1 {
-			for _, d := range parsed.Diagnostics {
-				f.Diagnostics = append(f.Diagnostics, Diagnostic{d.Severity, d.Code, lineNumber(lines, line.start), d.Message})
-			}
-			if len(parsed.Diagnostics) == 0 {
-				f.errAt("unsupported_metadata", lineNumber(lines, line.start), "Metadata value for %q is invalid.", label)
-			}
+		if parseErr != nil {
+			f.errAt("unsupported_metadata", lineNumber(lines, line.start), "Metadata value for %q is invalid: %s.", label, parseErr)
 			end = line.end
 			continue
 		}
 		seen[key] = true
-		f.Entries = append(f.Entries, Entry{Key: key, Value: parsed.Entries[0].Value, Raw: line.text + lineEnding(line.text), Line: lineNumber(lines, line.start)})
+		f.Entries = append(f.Entries, Entry{Key: key, Value: value, Raw: line.text + lineEnding(line.text), Line: lineNumber(lines, line.start)})
 		started = true
 		end = line.end
 	}
 	return f, end
+}
+
+func parseVisibleString(raw string) (string, error) {
+	if raw == "" || (raw[0] != '"' && raw[0] != '\'') {
+		return raw, nil
+	}
+	if raw[0] == '"' {
+		return parseQuotedMetaString(raw)
+	}
+	var out strings.Builder
+	for i := 1; i < len(raw); i++ {
+		if raw[i] != '\'' {
+			out.WriteByte(raw[i])
+			continue
+		}
+		if i+1 < len(raw)-1 && raw[i+1] == '\'' {
+			out.WriteByte('\'')
+			i++
+			continue
+		}
+		if i == len(raw)-1 {
+			return out.String(), nil
+		}
+		return "", fmt.Errorf("invalid quoted string")
+	}
+	return "", fmt.Errorf("unterminated quoted string")
+}
+
+func parseVisibleStringList(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}, nil
+	}
+	parts := make([]string, 0, 4)
+	start := 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if quote != 0 {
+			if quote == '"' && escaped {
+				escaped = false
+				continue
+			}
+			if quote == '"' && c == '\\' {
+				escaped = true
+				continue
+			}
+			if quote == '\'' && c == '\'' && i+1 < len(raw) && raw[i+1] == '\'' {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if (c == '"' || c == '\'') && strings.TrimSpace(raw[start:i]) == "" {
+			quote = c
+			continue
+		}
+		if c == ',' {
+			parts = append(parts, raw[start:i])
+			start = i + 1
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quoted list item")
+	}
+	parts = append(parts, raw[start:])
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("list contains an empty item")
+		}
+		value, err := parseVisibleString(part)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func parseVisibleMetadataLine(line string) (label, value string, ok bool) {

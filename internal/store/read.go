@@ -18,7 +18,7 @@ func ReadBoundedFile(path string, limit int64) ([]byte, error) {
 	if limit < 0 {
 		return nil, ErrReadLimit
 	}
-	f, err := os.Open(path)
+	f, err := openBoundedReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func readBoundedOpenFile(f *os.File, limit int64) ([]byte, error) {
 }
 
 func ReadBoundedRoot(root *os.Root, name string, limit int64) ([]byte, error) {
-	f, err := openRootNoFollow(root, name, os.O_RDONLY, 0)
+	f, err := openBoundedReadRoot(root, name)
 	if err != nil {
 		return nil, err
 	}

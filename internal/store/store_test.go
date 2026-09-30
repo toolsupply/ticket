@@ -54,6 +54,9 @@ func TestInitIdempotent(t *testing.T) {
 	if cfg.FormatVersion != 1 || !validRepositoryID(cfg.ID) {
 		t.Fatalf("format version=%d", cfg.FormatVersion)
 	}
+	if cfg.Name != "" {
+		t.Fatalf("unnamed init persisted name %q", cfg.Name)
+	}
 	if !bytes.Contains(configBytes, []byte(`"id":"`+cfg.ID+`"`)) {
 		t.Fatalf("config does not persist repository ID %q: %s", cfg.ID, configBytes)
 	}
@@ -64,6 +67,27 @@ func TestInitIdempotent(t *testing.T) {
 	}
 	if created2 {
 		t.Fatalf("second init unexpectedly created files: created=%v", created2)
+	}
+}
+
+func TestInitRootWithNamePersistsAndDoesNotRenameExistingRepository(t *testing.T) {
+	dir := t.TempDir()
+	created, err := InitRootWithName(dir, "Project tickets")
+	if err != nil || !created {
+		t.Fatalf("named init: created=%v err=%v", created, err)
+	}
+	cfg, err := LoadConfig(dir)
+	if err != nil || cfg.Name != "Project tickets" {
+		t.Fatalf("named config = %+v err=%v", cfg, err)
+	}
+
+	created, err = InitRootWithName(dir, "Replacement name")
+	if err != nil || created {
+		t.Fatalf("idempotent named init: created=%v err=%v", created, err)
+	}
+	cfg, err = LoadConfig(dir)
+	if err != nil || cfg.Name != "Project tickets" {
+		t.Fatalf("existing config was renamed: %+v err=%v", cfg, err)
 	}
 }
 

@@ -6,12 +6,60 @@ package identity
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"sync/atomic"
 	"time"
 )
 
 // TimestampIDLen is the ASCII length of a full ticket ID.
 const TimestampIDLen = 8 + 1 + 5
+
+// ActiveRootEntryKind describes how the active ticket scanner classifies one
+// direct entry under the ticket root.
+type ActiveRootEntryKind uint8
+
+const (
+	IgnoreActiveRootEntry ActiveRootEntryKind = iota
+	ActiveRootSymlink
+	ActiveRootTicketDirectory
+	ActiveRootMalformedTicketDirectory
+)
+
+// ClassifyActiveRootEntry matches the root-entry filtering used by active
+// ticket scans. mode and isDir should come from the directory entry or an
+// Lstat result; symlinks are classified without following them.
+func ClassifyActiveRootEntry(name string, mode fs.FileMode, isDir bool) ActiveRootEntryKind {
+	if name == ".local" || mode.IsRegular() {
+		return IgnoreActiveRootEntry
+	}
+	if mode&fs.ModeSymlink != 0 {
+		return ActiveRootSymlink
+	}
+	if !isDir {
+		return IgnoreActiveRootEntry
+	}
+	if ValidID(name) {
+		return ActiveRootTicketDirectory
+	}
+	if LooksLikeTicketID(name) {
+		return ActiveRootMalformedTicketDirectory
+	}
+	return IgnoreActiveRootEntry
+}
+
+// LooksLikeTicketID reports whether a name has the ticket date-prefix shape,
+// even when its full canonical ID is malformed.
+func LooksLikeTicketID(name string) bool {
+	if len(name) < 9 {
+		return false
+	}
+	for i := 0; i < 8; i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	return name[8] == '-'
+}
 
 // IDSource produces a full ID for the supplied entity prefix. The ticket
 // source uses an empty prefix; the parameter remains for the store interface.

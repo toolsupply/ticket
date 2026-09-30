@@ -32,21 +32,21 @@ func scanWith(st *store.Store) ([]*Ticket, []DiagnosticSummary, error) {
 	var diags []DiagnosticSummary
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == ".local" || name == store.ArchiveDirName || entry.Type().IsRegular() {
+		if name == store.ArchiveDirName {
 			continue
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
+		switch identity.ClassifyActiveRootEntry(name, entry.Type(), entry.IsDir()) {
+		case identity.IgnoreActiveRootEntry:
+			continue
+		case identity.ActiveRootSymlink:
 			diags = append(diags, DiagnosticSummary{Path: name, Message: "ticket directory must not be a symlink"})
 			continue
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		if !identity.ValidID(name) && looksLikeTicketID(name) {
+		case identity.ActiveRootMalformedTicketDirectory:
 			diags = append(diags, DiagnosticSummary{Path: name, Message: "ticket directory name is not a canonical ticket ID"})
 			continue
-		}
-		if !identity.ValidID(name) {
+		case identity.ActiveRootTicketDirectory:
+			// Continue below to validate and read the canonical ticket.
+		default:
 			continue
 		}
 		info, err := st.TicketDirInfo(name)
@@ -106,12 +106,12 @@ func scanArchivedWith(st *store.Store) ([]*Ticket, []DiagnosticSummary, error) {
 			continue
 		}
 		if !entry.IsDir() {
-			if identity.ValidID(name) || looksLikeTicketID(name) {
+			if identity.ValidID(name) || identity.LooksLikeTicketID(name) {
 				diags = append(diags, DiagnosticSummary{Path: archivePath, Message: "ticket archive entry must be a directory"})
 			}
 			continue
 		}
-		if !identity.ValidID(name) && looksLikeTicketID(name) {
+		if !identity.ValidID(name) && identity.LooksLikeTicketID(name) {
 			diags = append(diags, DiagnosticSummary{Path: archivePath, Message: "ticket directory name is not a canonical ticket ID"})
 			continue
 		}
@@ -133,18 +133,6 @@ func scanArchivedWith(st *store.Store) ([]*Ticket, []DiagnosticSummary, error) {
 		tickets = append(tickets, ticket)
 	}
 	return tickets, diags, nil
-}
-
-func looksLikeTicketID(name string) bool {
-	if len(name) < 9 {
-		return false
-	}
-	for i := 0; i < 8; i++ {
-		if name[i] < '0' || name[i] > '9' {
-			return false
-		}
-	}
-	return name[8] == '-'
 }
 
 type DiagnosticSummary struct {

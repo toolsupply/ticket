@@ -16,6 +16,9 @@ var helpFlag, helpSeen bool
 func cmdInit(ctx *commandContext, args []string) error {
 	p := ctx.newParser()
 	ctx.registerWithoutActor(p)
+	var name string
+	p.str("name", &name)
+	p.alias("n", "name")
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
 	if err := p.parse(args); err != nil {
@@ -43,7 +46,7 @@ func cmdInit(ctx *commandContext, args []string) error {
 	if target == "" {
 		target = "./tickets"
 	}
-	created, err := store.InitRoot(target)
+	created, err := store.InitRootWithName(target, name)
 	if err != nil {
 		return err
 	}

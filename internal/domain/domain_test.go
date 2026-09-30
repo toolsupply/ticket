@@ -6,7 +6,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -343,6 +345,9 @@ func TestSymlinkedTaskRejected(t *testing.T) {
 	}
 	link := filepath.Join(dir, "TASK.md")
 	if err := os.Symlink("TARGET_MISSING", link); err != nil {
+		if runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(1314)) {
+			t.Skipf("creating symlink requires Windows symlink privilege: %v", err)
+		}
 		t.Fatal(err)
 	}
 	defer os.Remove(link)

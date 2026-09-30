@@ -87,8 +87,10 @@ The skill teaches agents to discover, claim, update, and submit tickets while pr
 Initialize a ticket repository:
 
 ```sh
-ticket init
+ticket init --name "Project tickets"
 ```
+
+The name is optional; `ticket init` creates an unnamed repository.
 
 ### Human workflow
 
