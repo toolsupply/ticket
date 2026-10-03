@@ -485,7 +485,7 @@ func Submit(st *store.Store, id string, opts SubmitOptions) (*TransitionResult, 
 }
 
 func Hold(st *store.Store, id string, opts HoldOptions) (*TransitionResult, error) {
-	return moveAssigned(st, id, opts.Actor, opts.Handoff, opts.Message, "open", "hold", "hold")
+	return moveAssignedAny(st, id, opts.Actor, opts.Handoff, opts.Message, []string{"open", "review"}, "hold", "hold")
 }
 
 func moveAssigned(st *store.Store, id, actor string, handoff, message *string, from, to, action string) (*TransitionResult, error) {

@@ -2,6 +2,12 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.2.4] - 2026-10-03
+
+### Changed
+
+- Allowed ordinary `hold` transitions from `review`.
+
 ## [0.2.3] - 2026-09-30
 
 ### Added
@@ -145,6 +151,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.2.4]: https://github.com/toolsupply/ticket/releases/tag/v0.2.4
 [0.2.3]: https://github.com/toolsupply/ticket/releases/tag/v0.2.3
 [0.2.2]: https://github.com/toolsupply/ticket/releases/tag/v0.2.2
 [0.2.1]: https://github.com/toolsupply/ticket/releases/tag/v0.2.1
