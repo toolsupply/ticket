@@ -28,7 +28,8 @@ type ReleaseResult struct {
 	Changed bool   `json:"changed"`
 }
 
-// ReassignOptions atomically transfers ownership from Actor to Assignee.
+// ReassignOptions atomically assigns an unclaimed ticket or transfers ownership
+// from Actor to Assignee.
 // Reassignment preserves the ticket lifecycle state and may update handoff
 // context and append a work-log entry in the same mutation.
 type ReassignOptions struct {
@@ -165,11 +166,7 @@ func Reassign(st *store.Store, id string, opts ReassignOptions) (*ReassignResult
 	if err != nil {
 		return nil, err
 	}
-	if t.State != "open" && t.State != "review" || t.Assignee == "" {
-		return nil, contract.NewError(contract.ErrInvalidTransition,
-			"Only an assigned open or review ticket can be reassigned.", nil)
-	}
-	if t.Assignee != opts.Actor {
+	if t.Assignee != "" && t.Assignee != opts.Actor {
 		return nil, contract.NewError(contract.ErrAlreadyClaimed,
 			"The ticket is assigned to another actor.", map[string]any{"id": full})
 	}

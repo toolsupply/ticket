@@ -214,7 +214,7 @@ func commandUsage(name string) string {
 		"append":    "ID [OBJECTIVE_FILE|-]",
 		"claim":     "[ID]",
 		"release":   "[ID]",
-		"reassign":  "ID ASSIGNEE",
+		"reassign":  "ID [ASSIGNEE | --to ASSIGNEE]",
 		"close":     "[ID...|STATE...|all]",
 		"approve":   "[ID...|review|all]",
 		"reject":    "[ID] [OUTCOME]",

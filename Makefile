@@ -15,6 +15,8 @@ DIST  := dist
 LDFLAGS ?= -s -w
 VERSION := $(strip $(shell cat VERSION 2>/dev/null))
 SKILL := skills/ticket-tasks
+GOUTILS_DIR ?= ../goutils
+GOUTILS_REV ?= 1e0703d171b58dd89777e9e2fcc3cc84ae54115b
 # "GOOS/GOARCH" release targets (cross-compile with CGO disabled).
 # Windows arm64 is intentionally left out of the first release matrix; it can
 # be added without changing the packaging layout when there is demand for it.
@@ -25,7 +27,7 @@ ifeq ($(VERSION),)
 $(error VERSION must contain a release version)
 endif
 
-.PHONY: build dist archives release test race race-fresh vet fmt clean
+.PHONY: build dist archives release test test-goutils-migration race race-fresh vet fmt clean
 
 # Host binary for THIS machine -> bin/ticket (matches the Linux dev host).
 build:
@@ -87,3 +89,20 @@ fmt:
 clean:
 	rm -rf $(BIN) $(DIST)
 	rm -f ticket ticket.exe
+
+# Opt-in schema-fit checks against the exact goutils revision. Keep this
+# migration-only dependency out of Ticket's default module and CI graph.
+test-goutils-migration:
+	@set -eu; \
+	  goutils_dir="$(GOUTILS_DIR)"; \
+	  test -f "$$goutils_dir/cli/go.mod" || { echo "GOUTILS_DIR must point to the goutils repository" >&2; exit 1; }; \
+	  git -C "$$goutils_dir" cat-file -e "$(GOUTILS_REV)^{commit}"; \
+	  tmpdir=$$(mktemp -d "$${TMPDIR:-/tmp}/ticket-goutils-migration.XXXXXX"); \
+	  trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	  mkdir -p "$$tmpdir/goutils"; \
+	  git -C "$$goutils_dir" archive "$(GOUTILS_REV)" | tar -x -C "$$tmpdir/goutils"; \
+	  cp go.mod "$$tmpdir/ticket.mod"; \
+	  printf '\nrequire github.com/toolsupply/goutils/cli v0.0.0-20261003183322-1e0703d171b5\nreplace github.com/toolsupply/goutils/cli => %s\n' "$$tmpdir/goutils/cli" >> "$$tmpdir/ticket.mod"; \
+	  sed '1c\//go:build goutilsmigration' internal/cli/goutils_schema_migration_test.go > "$$tmpdir/goutils_schema_migration_test.go"; \
+	  printf '{"Replace":{"%s/internal/cli/goutils_schema_migration_test.go":"%s/goutils_schema_migration_test.go"}}\n' "$(CURDIR)" "$$tmpdir" > "$$tmpdir/overlay.json"; \
+	  GOTOOLCHAIN=local GOPROXY=off $(GO) test -tags=goutilsmigration -overlay="$$tmpdir/overlay.json" -count=1 -mod=mod -modfile="$$tmpdir/ticket.mod" ./internal/cli -run '^TestGoutilsMigrationCandidate'

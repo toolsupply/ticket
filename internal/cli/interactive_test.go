@@ -50,6 +50,42 @@ func releaseEditor(t *testing.T, path string) {
 	}
 }
 
+// startBlockingEditorInvocation registers cleanup after fixture environment
+// setup and before the child can start. Completion is independent of result
+// consumption so cleanup always joins before the fixture is restored.
+func startBlockingEditorInvocation[T any](t *testing.T, release string, invoke func() T) <-chan T {
+	t.Helper()
+	result := make(chan T, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release blocking editor during cleanup: %v", err)
+		}
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Error("timed out joining blocking editor invocation during cleanup")
+		}
+	})
+	go func() {
+		defer close(finished)
+		result <- invoke()
+	}()
+	return result
+}
+
+func awaitBlockingEditorResult[T any](t *testing.T, result <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-result:
+		return value
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for blocking editor invocation result")
+		var zero T
+		return zero
+	}
+}
+
 func TestInteractiveEditReleasesRepositoryLock(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -60,14 +96,12 @@ func TestInteractiveEditReleasesRepositoryLock(t *testing.T) {
 	b := exactlyOneJSONObject(t, mustCLI(t, "create", "Edit B", "Claim the second ticket."))["id"].(string)
 	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited after releasing the lock.\n")
 	t.Setenv("EDITOR", editor)
-	defer releaseEditor(t, release)
 
-	result := make(chan interactiveResult, 1)
-	go func() {
+	result := startBlockingEditorInvocation(t, release, func() interactiveResult {
 		var out bytes.Buffer
 		code := Run([]string{"edit", a}, &out)
-		result <- interactiveResult{out: out.String(), code: code}
-	}()
+		return interactiveResult{out: out.String(), code: code}
+	})
 	waitForFile(t, started)
 
 	st, err := store.Open(dir, store.OpenOptions{})
@@ -81,7 +115,7 @@ func TestInteractiveEditReleasesRepositoryLock(t *testing.T) {
 	st.Close()
 
 	releaseEditor(t, release)
-	got := <-result
+	got := awaitBlockingEditorResult(t, result)
 	if got.code != 0 || got.out != "edited "+a+"\n" {
 		t.Fatalf("interactive edit result: code=%d out=%q err=%v", got.code, got.out, got.err)
 	}
@@ -98,13 +132,11 @@ func TestInteractiveEditClaimsUnassignedTicketBeforeEditor(t *testing.T) {
 	id := exactlyOneJSONObject(t, mustCLI(t, "create", "Claim before edit", "Claim this ticket before opening the editor."))["id"].(string)
 	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited after claiming.\n")
 	t.Setenv("EDITOR", editor)
-	defer releaseEditor(t, release)
 
-	result := make(chan int, 1)
-	go func() {
+	result := startBlockingEditorInvocation(t, release, func() int {
 		var out bytes.Buffer
-		result <- Run([]string{"edit", id, "--actor", "worker"}, &out)
-	}()
+		return Run([]string{"edit", id, "--actor", "worker"}, &out)
+	})
 	waitForFile(t, started)
 	st, err := store.Open(dir, store.OpenOptions{})
 	if err != nil {
@@ -119,7 +151,7 @@ func TestInteractiveEditClaimsUnassignedTicketBeforeEditor(t *testing.T) {
 		t.Fatalf("ticket was not claimed before editor: %q", ticket.Assignee)
 	}
 	releaseEditor(t, release)
-	if code := <-result; code != 0 {
+	if code := awaitBlockingEditorResult(t, result); code != 0 {
 		t.Fatalf("edit after automatic claim failed: exit=%d", code)
 	}
 	view := exactlyOneJSONObject(t, mustCLI(t, "show", id, "--full"))
@@ -190,11 +222,9 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	t.Setenv("TICKET_ACTOR", "user")
 	editor, started, release := writeBlockingEditor(t, dir, "\n## Handoff\nEdited draft.\n")
 	t.Setenv("EDITOR", editor)
-	defer releaseEditor(t, release)
 
 	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}}
-	result := make(chan error, 1)
-	go func() { result <- editWithEditor(ctx, id) }()
+	result := startBlockingEditorInvocation(t, release, func() error { return editWithEditor(ctx, id) })
 	waitForFile(t, started)
 
 	st, err := store.Open(dir, store.OpenOptions{})
@@ -207,7 +237,7 @@ func TestInteractiveEditRefusesConcurrentChangeAndPreservesDraft(t *testing.T) {
 	}
 	st.Close()
 	releaseEditor(t, release)
-	err = <-result
+	err = awaitBlockingEditorResult(t, result)
 	var ce *contract.Error
 	if !errors.As(err, &ce) || ce.Code != contract.ErrConflict {
 		t.Fatalf("concurrent edit error=%v", err)
@@ -264,8 +294,7 @@ func TestInteractiveEditRechecksOwnershipBeforePublication(t *testing.T) {
 	t.Setenv("EDITOR", editor)
 	t.Setenv("TICKET_ACTOR", "worker")
 	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}}
-	result := make(chan error, 1)
-	go func() { result <- editWithEditor(ctx, id) }()
+	result := startBlockingEditorInvocation(t, release, func() error { return editWithEditor(ctx, id) })
 	waitForFile(t, started)
 
 	st, err := store.Open(dir, store.OpenOptions{})
@@ -282,7 +311,7 @@ func TestInteractiveEditRechecksOwnershipBeforePublication(t *testing.T) {
 	}
 	st.Close()
 	releaseEditor(t, release)
-	err = <-result
+	err = awaitBlockingEditorResult(t, result)
 	var ce *contract.Error
 	if !errors.As(err, &ce) || ce.Code != contract.ErrConflict {
 		t.Fatalf("ownership race error=%v", err)
@@ -324,12 +353,10 @@ func TestInteractiveNewIsInvisibleUntilPublication(t *testing.T) {
 	}
 	editor, started, release := writeBlockingEditor(t, dir, "\n## Objective\nPublished after editing.\n")
 	t.Setenv("EDITOR", editor)
-	defer releaseEditor(t, release)
-	result := make(chan interactiveResult, 1)
-	go func() {
+	result := startBlockingEditorInvocation(t, release, func() interactiveResult {
 		var out bytes.Buffer
-		result <- interactiveResult{code: Run([]string{"new", "Hidden ticket", "-e"}, &out), out: out.String()}
-	}()
+		return interactiveResult{code: Run([]string{"new", "Hidden ticket", "-e"}, &out), out: out.String()}
+	})
 	waitForFile(t, started)
 
 	st, err := store.Open(dir, store.OpenOptions{})
@@ -345,7 +372,7 @@ func TestInteractiveNewIsInvisibleUntilPublication(t *testing.T) {
 		t.Fatalf("draft was visible before publication: %+v", listed.Items)
 	}
 	releaseEditor(t, release)
-	got := <-result
+	got := awaitBlockingEditorResult(t, result)
 	if got.code != 0 || !strings.HasPrefix(got.out, "created ") {
 		t.Fatalf("new editor result: code=%d out=%q", got.code, got.out)
 	}

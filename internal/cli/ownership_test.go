@@ -137,3 +137,112 @@ func runCLIStdinMust(t *testing.T, input string, args ...string) string {
 	}
 	return out
 }
+
+func TestReassignToOption(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "assign", "work"))["id"].(string)
+	for _, args := range [][]string{
+		{"reassign", id, "user", "--to", "user", "--actor", "coder"},
+		{"reassign", id, "--to", "", "--actor", "coder"},
+	} {
+		if out, code := runCLI(t, args...); code == 0 {
+			t.Fatalf("accepted invalid target: %v %s", args, out)
+		}
+	}
+	if out, code := runCLIStdin(t, `{"assignee":"user"}`, "reassign", id, "--to", "user", "--input", "-", "--actor", "coder"); code == 0 {
+		t.Fatalf("accepted --to with --input: %s", out)
+	}
+	assigned := exactlyOneJSONObject(t, mustCLI(t, "reassign", id, "--to", "coder", "--actor", "coder"))
+	if assigned["assignee"] != "coder" || assigned["from_assignee"] != "" {
+		t.Fatalf("assignment: %v", assigned)
+	}
+	transferred := exactlyOneJSONObject(t, mustCLI(t, "reassign", id, "--to", "user", "--actor", "coder"))
+	if transferred["assignee"] != "user" || transferred["from_assignee"] != "coder" {
+		t.Fatalf("transfer: %v", transferred)
+	}
+}
+
+func TestQueryReassignSignoff(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mustCLI(t, "init")
+	id := exactlyOneJSONObject(t, mustCLI(t, "create", "signoff", "work"))["id"].(string)
+	mustCLI(t, "claim", id, "--actor", "coder")
+	mustCLI(t, "submit", id, "--actor", "coder")
+	mustCLI(t, "claim", id, "--actor", "reviewer")
+	mustCLI(t, "approve", id, "--actor", "reviewer")
+	result := exactlyOneJSONObject(t, mustCLI(t, "query", "id:"+id, "state:signoff", "unclaimed", "::", "reassign", "--to", "user", "--handoff", "explanation", "-m", "routed", "--actor", "reviewer"))
+	if result["changed"] != true || result["state"] != "signoff" || result["assignee"] != "user" || result["from_assignee"] != "" {
+		t.Fatalf("signoff assignment: %v", result)
+	}
+	before := mustCLI(t, "show", id, "--full")
+	if !strings.Contains(before, "explanation") || !strings.Contains(before, "routed") {
+		t.Fatalf("context missing: %s", before)
+	}
+	for _, args := range [][]string{
+		{"query", "id:" + id, "unclaimed", "::", "reassign", "--to", "other", "--actor", "reviewer"},
+		{"query", "id:" + id, "::", "reassign", "--to", "other", "--actor", "reviewer"},
+		{"query", "id:" + id, "::", "reassign", id, "--to", "other", "--actor", "reviewer"},
+		{"query", "id:" + id, "::", "reassign", "--actor", "reviewer"},
+		{"query", "--actor", "reviewer", "id:" + id, "::", "reassign", "--to", "other", "--actor", "reviewer"},
+	} {
+		if out, code := runCLI(t, args...); code == 0 {
+			t.Fatalf("accepted unsafe reassignment: %v %s", args, out)
+		}
+		if after := mustCLI(t, "show", id, "--full"); after != before {
+			t.Fatalf("failed reassignment changed ticket: %s", after)
+		}
+	}
+}
+
+func TestQueryReassignRequiresSingleMatch(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mustCLI(t, "init")
+	var ids []string
+	for _, title := range []string{"first", "second"} {
+		ids = append(ids, exactlyOneJSONObject(t, mustCLI(t, "create", title, "work"))["id"].(string))
+	}
+	for _, query := range []string{"state:open", "state:signoff"} {
+		out, code := runCLI(t, "query", query, "::", "reassign", "--to", "user", "--actor", "coder")
+		if code == 0 || errCode(t, out) != "invalid_argument" {
+			t.Fatalf("cardinality: %d %s", code, out)
+		}
+	}
+	for _, id := range ids {
+		view := exactlyOneJSONObject(t, mustCLI(t, "show", id))
+		if view["assignee"] != nil {
+			t.Fatalf("cardinality failure mutated ticket: %v", view)
+		}
+	}
+	result := exactlyOneJSONObject(t, mustCLI(t, "query", "--actor", "coder", "id:"+ids[0], "::", "reassign", "--to", "user"))
+	if result["assignee"] != "user" {
+		t.Fatalf("producer actor: %v", result)
+	}
+}
+
+func TestReassignEveryLifecycleState(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mustCLI(t, "init")
+	for _, state := range []string{"open", "hold", "review", "signoff", "closed", "rejected"} {
+		t.Run(state, func(t *testing.T) {
+			id := exactlyOneJSONObject(t, mustCLI(t, "create", state, "work"))["id"].(string)
+			mustCLI(t, "state", id, state)
+			result := exactlyOneJSONObject(t, mustCLI(t, "query", "id:"+id, "state:"+state, "unclaimed", "::", "reassign", "--to", "user", "--handoff", "context", "--actor", "router"))
+			if result["id"] != id || result["state"] != state || result["assignee"] != "user" || result["from_assignee"] != "" || result["changed"] != true || result["handoff"] != "context" {
+				t.Fatalf("response does not confirm reassignment: %v", result)
+			}
+			out, code := runCLI(t, "reassign", id, "--to", "other", "--actor", "router")
+			if code == 0 || errCode(t, out) != "already_claimed" {
+				t.Fatalf("owner protection: %d %s", code, out)
+			}
+			noop := exactlyOneJSONObject(t, mustCLI(t, "reassign", id, "--to", "user", "--actor", "user"))
+			if noop["id"] != id || noop["state"] != state || noop["assignee"] != "user" || noop["from_assignee"] != "user" || noop["changed"] != false {
+				t.Fatalf("no-op result: %v", noop)
+			}
+			transferred := exactlyOneJSONObject(t, mustCLI(t, "reassign", id, "--to", "other", "--actor", "user"))
+			if transferred["state"] != state || transferred["from_assignee"] != "user" || transferred["assignee"] != "other" || transferred["changed"] != true {
+				t.Fatalf("transfer result: %v", transferred)
+			}
+		})
+	}
+}

@@ -174,7 +174,7 @@ func splitQueryComposition(args []string) (producer, consumer []string, composed
 
 func runQueryComposition(ctx *commandContext, options *queryOptions, args []string) error {
 	consumer := canonicalCommand(args[0])
-	if consumer != "list" && consumer != "graph" && consumer != "close" && consumer != "archive" && consumer != "approve" {
+	if consumer != "list" && consumer != "graph" && consumer != "close" && consumer != "archive" && consumer != "approve" && consumer != "reassign" {
 		return contract.NewError(contract.ErrInvalidArgument,
 			"Unsupported query composition consumer: "+args[0]+".", nil)
 	}
@@ -208,6 +208,8 @@ func prepareQueryConsumer(ctx *commandContext, options *queryOptions, consumer s
 		return prepareQueryArchiveConsumer(ctx, args)
 	case "approve":
 		return prepareQueryApproveConsumer(ctx, options, args)
+	case "reassign":
+		return prepareQueryReassignConsumer(ctx, options, args)
 	default:
 		return nil, contract.NewError(contract.ErrInvalidArgument,
 			"Unsupported query composition consumer: "+consumer+".", nil)
@@ -418,4 +420,56 @@ func compositionFields(fields string) ([]string, error) {
 func compositionTargetError(consumer string) error {
 	return contract.NewError(contract.ErrInvalidArgument,
 		"Command "+consumer+" after :: accepts no ticket selectors; the query side already supplies the target.", nil)
+}
+
+// Selection and the single-ticket replacement execute within runRepoCommand's
+// store lifetime, retaining the repository lock across both operations.
+func prepareQueryReassignConsumer(ctx *commandContext, options *queryOptions, args []string) (queryConsumerPlan, error) {
+	p := ctx.newParser()
+	ctx.registerJSON(p)
+	p.help = &helpFlag
+	p.helpSeen = &helpSeen
+	var target, consumerActor, handoff, message string
+	var targetSet, handoffSet, messageSet bool
+	p.str("actor", &consumerActor)
+	p.flag("to", kindString, func(v string) error { target = v; targetSet = true; return nil }, false)
+	p.flag("handoff", kindString, func(v string) error { handoff = v; handoffSet = true; return nil }, false)
+	p.flag("message", kindString, func(v string) error { message = v; messageSet = true; return nil }, false)
+	p.alias("m", "message")
+	if err := p.parse(args); err != nil {
+		return nil, err
+	}
+	if helpFlag {
+		return nil, emitHelpCommand(ctx, "reassign")
+	}
+	if len(p.positionals) > 0 {
+		return nil, compositionTargetError("reassign")
+	}
+	if !targetSet || target == "" {
+		return nil, contract.NewError(contract.ErrInvalidArgument, "Reassign after :: requires --to ASSIGNEE.", nil)
+	}
+	if consumerActor != "" {
+		if options.actorSet {
+			return nil, contract.NewError(contract.ErrInvalidArgument, "Actor must be supplied on only one side of ::.", nil)
+		}
+		ctx.actor = consumerActor
+	}
+	actor, err := ctx.actorToken()
+	if err != nil {
+		return nil, err
+	}
+	opts := domain.ReassignOptions{Actor: actor, Assignee: target}
+	if handoffSet {
+		opts.Handoff = &handoff
+	}
+	if messageSet {
+		opts.Message = &message
+	}
+	return func(st *store.Store, set *domain.TicketSet) (any, error) {
+		ids := set.IDs()
+		if len(ids) != 1 {
+			return nil, contract.NewError(contract.ErrInvalidArgument, "Reassign requires exactly one query match.", map[string]any{"count": len(ids)})
+		}
+		return domain.Reassign(st, ids[0], opts)
+	}, nil
 }

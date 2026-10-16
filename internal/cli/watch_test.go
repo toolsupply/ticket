@@ -651,22 +651,23 @@ func TestWatchStartsFromNowAndDoesNotWriteMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := &synchronizedWatchBuffer{signal: make(chan struct{})}
-	done := make(chan struct{})
+	ready := make(chan struct{})
 	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}, liveWriter: output}
-	watchDone := make(chan error, 1)
-	go func() { watchDone <- runWatchLoop(ctx, watchOptions{}, done) }()
-	time.Sleep(50 * time.Millisecond)
+	ops := watchLoopOps{
+		changeState: store.ChangeState, fingerprint: watchMetadataFingerprint, snapshot: watchSnapshotTickets,
+		ready: func(string) error { close(ready); return nil },
+	}
+	stop := startWatchFixture(t, ctx, watchLoopTiming{
+		marker: watchPollInterval, fingerprint: watchFingerprintInterval, phaseFingerprint: true,
+	}, ops)
+	waitWatchFixture(t, ready, 2*time.Second, "watch startup baseline")
 	mustCLI(t, "create", "Watched ticket", "Emit a created event.")
 	select {
 	case <-output.signal:
 	case <-time.After(2 * time.Second):
-		close(done)
 		t.Fatalf("watch emitted no event")
 	}
-	close(done)
-	if err := <-watchDone; err != nil {
-		t.Fatal(err)
-	}
+	stop()
 	if !strings.Contains(output.String(), "created") {
 		t.Fatalf("watch output=%q", output.String())
 	}
@@ -691,51 +692,38 @@ func TestWatchDetectsMetadataChangeWithoutChangeMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := &synchronizedWatchBuffer{signal: make(chan struct{})}
-	done := make(chan struct{})
+	ready := make(chan struct{})
 	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}, liveWriter: output}
-	watchDone := make(chan error, 1)
-	go func() {
-		watchDone <- runWatchLoopWith(ctx, watchOptions{}, done,
-			watchLoopTiming{marker: 10 * time.Millisecond, fingerprint: 40 * time.Millisecond}, watchLoopOps{
-				changeState: store.ChangeState, fingerprint: watchMetadataFingerprint, snapshot: watchSnapshotTickets,
-			})
-	}()
-	time.Sleep(50 * time.Millisecond)
+	ops := watchLoopOps{
+		changeState: store.ChangeState, fingerprint: watchMetadataFingerprint, snapshot: watchSnapshotTickets,
+		ready: func(string) error { close(ready); return nil },
+	}
+	stop := startWatchFixture(t, ctx, watchLoopTiming{
+		marker: 10 * time.Millisecond, fingerprint: 40 * time.Millisecond,
+	}, ops)
+	waitWatchFixture(t, ready, 2*time.Second, "watch startup baseline")
 
 	contents, err := os.ReadFile(taskPath)
 	if err != nil {
-		close(done)
-		<-watchDone
 		t.Fatal(err)
 	}
 	updated := strings.Replace(string(contents), "# Before", "# After!", 1)
 	if updated == string(contents) {
-		close(done)
-		<-watchDone
 		t.Fatal("could not find ticket title to update")
 	}
 	if err := os.WriteFile(taskPath, []byte(updated), 0o600); err != nil {
-		close(done)
-		<-watchDone
 		t.Fatal(err)
 	}
 	stamp := time.Now().Add(time.Second)
 	if err := os.Chtimes(taskPath, stamp, stamp); err != nil {
-		close(done)
-		<-watchDone
 		t.Fatal(err)
 	}
 	select {
 	case <-output.signal:
 	case <-time.After(2 * time.Second):
-		close(done)
-		<-watchDone
 		t.Fatalf("watch emitted no event for metadata-visible edit; output=%q", output.String())
 	}
-	close(done)
-	if err := <-watchDone; err != nil {
-		t.Fatal(err)
-	}
+	stop()
 	if !strings.Contains(output.String(), "edited") {
 		t.Fatalf("watch output=%q, want edited event", output.String())
 	}
@@ -950,49 +938,81 @@ func TestWatchCoalescesMarkerAndFingerprintChanges(t *testing.T) {
 	t.Chdir(dir)
 	mustCLI(t, "init")
 	var snapshots atomic.Int32
-	startupSnapshot := make(chan struct{})
-	var startupOnce sync.Once
+	var fingerprintReads atomic.Int32
+	var observationTarget atomic.Int32
+	ready := make(chan struct{})
+	observed := make(chan struct{})
+	var observedOnce sync.Once
 	ops := watchLoopOps{
-		changeState: store.ChangeState,
-		fingerprint: watchMetadataFingerprint,
-		snapshot: func(cwd, root string) (map[string]watchSnapshot, error) {
-			count := snapshots.Add(1)
-			if count == 1 {
-				startupOnce.Do(func() { close(startupSnapshot) })
+		changeState: func(root string) (string, error) {
+			marker, err := store.ChangeState(root)
+			// Entry into the next cycle proves the preceding fingerprint
+			// observation and any resulting snapshot refresh have finished.
+			if target := observationTarget.Load(); target != 0 && fingerprintReads.Load() >= target {
+				observedOnce.Do(func() { close(observed) })
 			}
+			return marker, err
+		},
+		fingerprint: func(root string) ([32]byte, error) {
+			value, err := watchMetadataFingerprint(root)
+			fingerprintReads.Add(1)
+			return value, err
+		},
+		snapshot: func(cwd, root string) (map[string]watchSnapshot, error) {
+			snapshots.Add(1)
 			return watchSnapshotTickets(cwd, root)
 		},
+		ready: func(string) error { close(ready); return nil },
 	}
 	output := &synchronizedWatchBuffer{signal: make(chan struct{})}
-	done := make(chan struct{})
 	ctx := &commandContext{cwd: dir, stdout: &bytes.Buffer{}, liveWriter: output}
-	watchDone := make(chan error, 1)
-	go func() {
-		watchDone <- runWatchLoopWith(ctx, watchOptions{}, done,
-			watchLoopTiming{marker: 8 * time.Millisecond, fingerprint: 20 * time.Millisecond}, ops)
-	}()
-	select {
-	case <-startupSnapshot:
-	case <-time.After(time.Second):
-		close(done)
-		<-watchDone
-		t.Fatal("watch did not establish startup snapshot")
-	}
+	stop := startWatchFixture(t, ctx, watchLoopTiming{
+		marker: 8 * time.Millisecond, fingerprint: 20 * time.Millisecond,
+	}, ops)
+	waitWatchFixture(t, ready, time.Second, "watch startup baseline")
 	mustCLI(t, "create", "Coalesced", "Change marker and metadata in one mutation.")
-	select {
-	case <-output.signal:
-	case <-time.After(time.Second):
-		close(done)
-		<-watchDone
-		t.Fatal("watch emitted no event for coalesced changes")
-	}
-	time.Sleep(60 * time.Millisecond)
-	close(done)
-	if err := <-watchDone; err != nil {
-		t.Fatal(err)
-	}
+	waitWatchFixture(t, output.signal, time.Second, "event for coalesced changes")
+	// Retain real filesystem observations: fake time cannot prove their
+	// completion. Three later fingerprint polls cover the original 60 ms
+	// observation window without using elapsed time as a completion signal.
+	observationTarget.Store(fingerprintReads.Load() + 3)
+	waitWatchFixture(t, observed, time.Second, "three later fingerprint polls and their processing")
+	stop()
 	if got := snapshots.Load(); got != 2 {
 		t.Fatalf("snapshots=%d, want startup plus one coalesced refresh", got)
+	}
+}
+
+// startWatchFixture registers stop-and-join cleanup before callers wait or
+// mutate the repository. The closed completion channel also works after stop.
+func startWatchFixture(t *testing.T, ctx *commandContext, timing watchLoopTiming, ops watchLoopOps) func() {
+	t.Helper()
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	var result error
+	var stopOnce sync.Once
+	stop := func() {
+		t.Helper()
+		stopOnce.Do(func() { close(done) })
+		waitWatchFixture(t, finished, time.Second, "watch shutdown")
+		if result != nil {
+			t.Errorf("watch stopped with error: %v", result)
+		}
+	}
+	t.Cleanup(stop)
+	go func() {
+		defer close(finished)
+		result = runWatchLoopWith(ctx, watchOptions{Ready: true}, done, timing, ops)
+	}()
+	return stop
+}
+
+func waitWatchFixture(t *testing.T, signal <-chan struct{}, timeout time.Duration, milestone string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for %s", milestone)
 	}
 }
 

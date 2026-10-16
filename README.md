@@ -156,6 +156,7 @@ TQL queries can be composed directly with an in-process consumer:
 ticket query state:open ready :: graph
 ticket query state:signoff :: close -m "Accepted"
 ticket query state:review unclaimed :: approve
+ticket query id:20260913-00001 state:signoff unclaimed :: reassign --to user --handoff "Ready for signoff"
 ticket query state:open :: list --deps --fields id,title
 ticket query terminal :: archive
 ```

@@ -285,7 +285,9 @@ func cmdReassign(ctx *commandContext, args []string) error {
 	ctx.register(p)
 	p.help = &helpFlag
 	p.helpSeen = &helpSeen
-	var handoff, message, inputPath string
+	var handoff, message, inputPath, target string
+	var targetSet bool
+	p.flag("to", kindString, func(v string) error { target = v; targetSet = true; return nil }, false)
 	var handoffSet, messageSet bool
 	p.flag("handoff", kindString, func(v string) error { handoff = v; handoffSet = true; return nil }, false)
 	p.flag("message", kindString, func(v string) error { message = v; messageSet = true; return nil }, false)
@@ -306,25 +308,24 @@ func cmdReassign(ctx *commandContext, args []string) error {
 	if err := ctx.check(); err != nil {
 		return err
 	}
-	if inputPath == "" && len(p.positionals) != 2 {
+	if inputPath == "" && ((!targetSet && len(p.positionals) != 2) || (targetSet && len(p.positionals) != 1)) {
 		return contract.NewError(contract.ErrInvalidArgument,
-			"Command reassign requires a ticket ID and target assignee.", nil)
+			"Command reassign requires a ticket ID and one target assignee, positional or --to.", nil)
 	}
 	if inputPath != "" && len(p.positionals) > 1 {
 		return contract.NewError(contract.ErrInvalidArgument,
 			"Command reassign accepts at most one ticket ID with --input.", nil)
 	}
 	ref := ""
-	target := ""
 	if len(p.positionals) > 0 {
 		ref = p.positionals[0]
 	}
-	if inputPath == "" {
+	if inputPath == "" && !targetSet {
 		target = p.positionals[1]
 	}
 	var in reassignInput
 	if inputPath != "" {
-		if handoffSet || messageSet {
+		if targetSet || handoffSet || messageSet {
 			return contract.NewError(contract.ErrInvalidArgument, "Reassign flags cannot be combined with --input.", nil)
 		}
 		if err := decodeInput(ctx.input, inputPath, &in); err != nil {

@@ -1,6 +1,7 @@
 package scm
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/toolsupply/ticket/internal/contract"
 )
@@ -49,13 +51,51 @@ func TestConfigureEnvironment(t *testing.T) {
 	}
 }
 
+const scmExitFixtureEnv = "TICKET_SCM_TEST_EXIT_HELPER"
+
+func TestSCMExitStatusHelper(t *testing.T) {
+	// Both guards are required; normal suite runs must never exit here,
+	// including runs inheriting the helper environment variable alone.
+	if os.Getenv(scmExitFixtureEnv) == "1" && len(os.Args) == 4 &&
+		os.Args[1] == "-test.run=^TestSCMExitStatusHelper$" &&
+		os.Args[2] == "--" && os.Args[3] == "ticket-scm-exit-1" {
+		os.Exit(1)
+	}
+}
+
+func scmExitStatusOne(t *testing.T) *exec.ExitError {
+	t.Helper()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "-test.run=^TestSCMExitStatusHelper$", "--", "ticket-scm-exit-1")
+	// Preserve the platform environment while overriding only helper mode;
+	// case-insensitive filtering also handles Windows environment keys.
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(key, scmExitFixtureEnv) {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, scmExitFixtureEnv+"=1")
+	cmd.WaitDelay = time.Second
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("SCM exit fixture timed out: %v; output=%q", ctx.Err(), output)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("SCM exit fixture: error=%v output=%q, want exit status 1", err, output)
+	}
+	return exitErr
+}
+
 func TestBackendCommandSemantics(t *testing.T) {
 	var calls []recordedCommand
-	changes := exec.Command("sh", "-c", "exit 1")
-	changesErr := changes.Run()
-	if changesErr == nil {
-		t.Fatal("expected an exit status for the changed fixture")
-	}
+	changesErr := scmExitStatusOne(t)
 	// Keep the real *exec.ExitError so the Git status convention is tested.
 	run := func(dir, name string, args ...string) ([]byte, error) {
 		calls = append(calls, recordedCommand{dir: dir, name: name, args: append([]string(nil), args...)})
@@ -371,10 +411,9 @@ func TestGitSynchronizationAllowsLocalRepositoryWithoutUpstream(t *testing.T) {
 }
 
 func TestGitValidateLocalRejectsTrackedRuntimeState(t *testing.T) {
-	trackedErr := exec.Command("sh", "-c", "exit 0")
 	run := func(_ string, name string, args ...string) ([]byte, error) {
 		if name == "git" && len(args) > 0 && args[0] == "ls-files" {
-			return []byte(".local/current\n"), trackedErr.Run()
+			return []byte(".local/current\n"), nil
 		}
 		return nil, nil
 	}
@@ -385,10 +424,10 @@ func TestGitValidateLocalRejectsTrackedRuntimeState(t *testing.T) {
 }
 
 func TestGitValidateLocalAllowsUntrackedRuntimeState(t *testing.T) {
-	missingErr := exec.Command("sh", "-c", "exit 1")
+	missingErr := scmExitStatusOne(t)
 	run := func(_ string, name string, args ...string) ([]byte, error) {
 		if name == "git" && len(args) > 0 && args[0] == "ls-files" {
-			return nil, missingErr.Run()
+			return nil, missingErr
 		}
 		return nil, nil
 	}
