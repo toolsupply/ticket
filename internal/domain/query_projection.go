@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"time"
+
 	"github.com/toolsupply/ticket/internal/contract"
 	"github.com/toolsupply/ticket/internal/store"
 )
@@ -37,12 +39,29 @@ func ProjectTicketSet(st *store.Store, set *TicketSet, fields []string, dependen
 			continue
 		}
 		item := project(ticket, fields)
+		if hasProjectionField(fields, "modified") {
+			modified, err := st.TaskModTime(ticket.ID)
+			if err != nil {
+				return nil, err
+			}
+			formatted := modified.Format(time.RFC3339)
+			item.Modified = &formatted
+		}
 		if dependencyView != "" {
 			item.Dependencies = dependencySummaries(ticket, dependencyByID, dependencyView)
 		}
 		result.Items = append(result.Items, item)
 	}
 	return result, nil
+}
+
+func hasProjectionField(fields []string, wanted string) bool {
+	for _, field := range fields {
+		if field == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // projectDependencyTickets starts with the selected set and resolves only its

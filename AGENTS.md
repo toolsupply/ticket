@@ -34,6 +34,7 @@ Preserve these invariants:
 * Preserve framing recovery, bounded request-local stdin, and mutation uncertainty metadata unless
   explicitly asked to work on the protocol with regressions accepted.
 * Clients establish stream readiness with a successful `version` request; startup errors before that are startup failures.
+* Do not update the manually crafted README.md or CHANGELOG.md
 
 Do not weaken path, symlink, traversal, locking, or atomic-write checks for convenience.
 

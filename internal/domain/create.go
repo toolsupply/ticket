@@ -13,13 +13,16 @@ import (
 
 // CreateOptions are the create request fields.
 type CreateOptions struct {
-	Title     string
-	Priority  int
-	Tags      []string
-	Parent    string
-	DependsOn []string
-	Sections  map[string]string // known keys -> content
-	Body      string            // optional complete Markdown after the managed title
+	Title         string
+	Priority      int
+	State         string
+	StateExplicit bool
+	Assignee      string
+	Tags          []string
+	Parent        string
+	DependsOn     []string
+	Sections      map[string]string // known keys -> content
+	Body          string            // optional complete Markdown after the managed title
 }
 
 // CreateResult is the create response.
@@ -35,6 +38,12 @@ type CreateResult struct {
 
 // maxCollisionRetries bounds ID collision retries.
 const maxCollisionRetries = 16
+
+// publishCreatedTicket is kept as a function seam so tests can pause at the
+// exact publication milestone and inspect the first visible ticket version.
+var publishCreatedTicket = func(st *store.Store, id string, data []byte, maxBytes int) error {
+	return st.PublishTicket(id, data, maxBytes)
+}
 
 // Create runs the create operation on an open store.
 func Create(st *store.Store, opts CreateOptions) (*CreateResult, error) {
@@ -59,6 +68,19 @@ func Create(st *store.Store, opts CreateOptions) (*CreateResult, error) {
 	}
 	if opts.Priority < 0 || opts.Priority > 4 {
 		return nil, contract.NewError(contract.ErrInvalidArgument, "Priority must be an integer 0-4.", nil)
+	}
+	state := opts.State
+	if state != "" {
+		var valid bool
+		state, valid = NormalizeLifecycleState(state)
+		if !valid {
+			return nil, contract.NewError(contract.ErrInvalidArgument,
+				"Initial state must be one of open, hold, review, signoff, closed, or rejected.", nil)
+		}
+	}
+	if opts.Assignee != "" && !assigneePattern.MatchString(opts.Assignee) {
+		return nil, contract.NewError(contract.ErrInvalidArgument,
+			"Assignee must match "+assigneePattern.String()+".", nil)
 	}
 	tags, err := normalizeTags(opts.Tags)
 	if err != nil {
@@ -94,9 +116,9 @@ func Create(st *store.Store, opts CreateOptions) (*CreateResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := RenderNew(opts.Title, opts.Priority, tags, parent, depends, sections)
+	data := RenderNewWithInitial(opts.Title, opts.Priority, tags, parent, depends, sections, state, opts.Assignee)
 	if body != "" {
-		data = RenderNewWithBody(opts.Title, opts.Priority, tags, parent, depends, body)
+		data = RenderNewWithBodyAndInitial(opts.Title, opts.Priority, tags, parent, depends, body, state, opts.Assignee)
 	}
 	var lastErr error
 	for attempt := 0; attempt < maxCollisionRetries; attempt++ {
@@ -122,7 +144,7 @@ func Create(st *store.Store, opts CreateOptions) (*CreateResult, error) {
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		err = st.PublishTicket(id, data, TaskMaxBytes)
+		err = publishCreatedTicket(st, id, data, TaskMaxBytes)
 		if err == nil {
 			return &CreateResult{ID: id, Path: id + "/TASK.md", Changed: true,
 				Title: parsed.Title, State: parsed.State, Priority: parsed.Priority,

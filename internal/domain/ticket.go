@@ -414,24 +414,41 @@ func stringSlice(v any) ([]string, bool) {
 
 // RenderNew builds the canonical TASK.md bytes for a new ticket.
 func RenderNew(title string, priority int, tags []string, parent string, dependsOn []string, sections map[string]string) []byte {
-	state := "hold"
-	if strings.TrimSpace(sections["objective"]) != "" {
-		state = "open"
+	return RenderNewWithInitial(title, priority, tags, parent, dependsOn, sections, "", "")
+}
+
+// RenderNewWithInitial builds a canonical ticket with an optional explicit
+// initial state and assignee. An omitted state keeps the objective-based default.
+func RenderNewWithInitial(title string, priority int, tags []string, parent string, dependsOn []string, sections map[string]string, state, assignee string) []byte {
+	if state == "" {
+		state = "hold"
+		if strings.TrimSpace(sections["objective"]) != "" {
+			state = "open"
+		}
 	}
-	return renderNew(title, priority, tags, parent, dependsOn, sections, state)
+	return renderNew(title, priority, tags, parent, dependsOn, sections, state, assignee)
 }
 
 // RenderNewForEditor builds the starter shown by create -e. The editor
 // presents a new ticket as open so the normal case needs no metadata edit;
 // publication normalizes an empty Objective back to hold.
 func RenderNewForEditor(title string, priority int, tags []string, parent string, dependsOn []string, sections map[string]string) []byte {
-	return renderNew(title, priority, tags, parent, dependsOn, sections, "open")
+	return RenderNewForEditorWithInitial(title, priority, tags, parent, dependsOn, sections, "", "")
 }
 
-func renderNew(title string, priority int, tags []string, parent string, dependsOn []string, sections map[string]string, state string) []byte {
+// RenderNewForEditorWithInitial builds an editor starter with an optional
+// explicit initial state and assignee. An omitted state keeps the open starter.
+func RenderNewForEditorWithInitial(title string, priority int, tags []string, parent string, dependsOn []string, sections map[string]string, state, assignee string) []byte {
+	if state == "" {
+		state = "open"
+	}
+	return renderNew(title, priority, tags, parent, dependsOn, sections, state, assignee)
+}
+
+func renderNew(title string, priority int, tags []string, parent string, dependsOn []string, sections map[string]string, state, assignee string) []byte {
 	var body strings.Builder
 	body.WriteString("# " + title + "\n\n")
-	renderMetadata(&body, state, priority, tags, parent, dependsOn, "", "")
+	renderMetadata(&body, state, priority, tags, parent, dependsOn, assignee, "")
 	body.WriteString("\n## Objective\n")
 	body.WriteString("\n")
 	if content := sections["objective"]; content != "" {
@@ -458,18 +475,26 @@ func renderNew(title string, priority int, tags []string, parent string, depends
 // RenderNewWithBody builds a canonical ticket while keeping the supplied
 // Markdown after the manager-owned H1 title.
 func RenderNewWithBody(title string, priority int, tags []string, parent string, dependsOn []string, body string) []byte {
-	state := "hold"
-	fullBody := []byte("# " + title + "\n\n" + body)
-	parsed := markdown.ParseBody(fullBody)
-	for _, section := range parsed.Sections {
-		if section.Key == "objective" && strings.TrimSpace(section.DisplayContent(fullBody)) != "" {
-			state = "open"
-			break
+	return RenderNewWithBodyAndInitial(title, priority, tags, parent, dependsOn, body, "", "")
+}
+
+// RenderNewWithBodyAndInitial builds a canonical ticket from a complete body
+// while honoring an optional explicit initial state and assignee.
+func RenderNewWithBodyAndInitial(title string, priority int, tags []string, parent string, dependsOn []string, body, state, assignee string) []byte {
+	if state == "" {
+		state = "hold"
+		fullBody := []byte("# " + title + "\n\n" + body)
+		parsed := markdown.ParseBody(fullBody)
+		for _, section := range parsed.Sections {
+			if section.Key == "objective" && strings.TrimSpace(section.DisplayContent(fullBody)) != "" {
+				state = "open"
+				break
+			}
 		}
 	}
 	var out strings.Builder
 	out.WriteString("# " + title + "\n\n")
-	renderMetadata(&out, state, priority, tags, parent, dependsOn, "", "")
+	renderMetadata(&out, state, priority, tags, parent, dependsOn, assignee, "")
 	out.WriteString("\n")
 	out.WriteString(body)
 	if !strings.HasSuffix(body, "\n") {

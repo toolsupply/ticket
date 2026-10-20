@@ -387,12 +387,19 @@ func validateCandidateReferences(st *store.Store, tickets []*Ticket, candidate *
 // ticket ID. The draft bytes are preserved exactly; only the directory name
 // supplies the new identity.
 func CreateFromDraft(st *store.Store, draft *Ticket) (*CreateResult, error) {
+	return CreateFromDraftWithExplicitState(st, draft, false)
+}
+
+// CreateFromDraftWithExplicitState publishes a validated editor draft. When
+// the requested initial state was explicit, preserve an open empty draft as
+// requested instead of applying the editor's omitted-state default.
+func CreateFromDraftWithExplicitState(st *store.Store, draft *Ticket, stateExplicit bool) (*CreateResult, error) {
 	if draft == nil || strings.TrimSpace(draft.Title) == "" {
 		return nil, contract.NewError(contract.ErrInvalidArgument, "A nonempty title is required.", nil)
 	}
 	candidateData := draft.FileBytes
 	candidate := *draft
-	if candidate.State == "open" && strings.TrimSpace(candidate.SectionText("objective")) == "" {
+	if !stateExplicit && candidate.State == "open" && strings.TrimSpace(candidate.SectionText("objective")) == "" {
 		candidate.State = "hold"
 		var err error
 		candidateData, err = renderUpdated(&candidate, candidate.Body, map[string]bool{"state": true})

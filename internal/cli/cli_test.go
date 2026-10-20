@@ -2600,3 +2600,63 @@ func TestCreateInputStrict(t *testing.T) {
 		t.Fatalf("valid input: %q (exit %d)", out, code)
 	}
 }
+
+func TestListModifiedProjection(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	mustCLI(t, "init")
+	create := func(title string, tags ...string) string {
+		t.Helper()
+		args := []string{"create", title, "Projection test."}
+		for _, tag := range tags {
+			args = append(args, "--tag", tag)
+		}
+		return exactlyOneJSONObject(t, mustCLI(t, args...))["id"].(string)
+	}
+	first := create("first", "target")
+	unmatched := create("unmatched", "elsewhere")
+	second := create("second", "target")
+	for id, stamp := range map[string]time.Time{
+		first:     time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC),
+		unmatched: time.Date(2024, 2, 3, 4, 6, 6, 0, time.UTC),
+		second:    time.Date(2024, 2, 3, 4, 7, 6, 0, time.UTC),
+	} {
+		path := filepath.Join(dir, "tickets", id, "TASK.md")
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	defaultResult := exactlyOneJSONObject(t, mustCLI(t, "list"))
+	if _, ok := defaultResult["items"].([]any)[0].(map[string]any)["modified"]; ok {
+		t.Fatalf("default list unexpectedly includes modified: %v", defaultResult)
+	}
+	list := exactlyOneJSONObject(t, mustCLI(t, "list", "--tag", "target", "--limit", "1", "--offset", "1", "--fields", "id,modified"))
+	items := list["items"].([]any)
+	if len(items) != 1 || list["more"] != false {
+		t.Fatalf("filtered page: %v", list)
+	}
+	row := items[0].(map[string]any)
+	if row["id"] != second {
+		t.Fatalf("selected wrong page row: %v", row)
+	}
+	status := exactlyOneJSONObject(t, mustCLI(t, "status", second))
+	if row["modified"] != status["modified"] {
+		t.Fatalf("list/status modified differ: list=%v status=%v", row["modified"], status["modified"])
+	}
+	if _, err := time.Parse(time.RFC3339, row["modified"].(string)); err != nil {
+		t.Fatalf("modified is not RFC3339: %v", err)
+	}
+
+	combined := exactlyOneJSONObject(t, mustCLI(t, "list", "--tag", "target", "--fields", "id,title,modified"))
+	combinedRow := combined["items"].([]any)[0].(map[string]any)
+	if combinedRow["id"] != first || combinedRow["title"] != "first" || combinedRow["modified"] == nil {
+		t.Fatalf("combined projection: %v", combinedRow)
+	}
+
+	query := exactlyOneJSONObject(t, mustCLI(t, "query", "state:open", "tag:target", "--limit", "1", "--offset", "1", "::", "list", "--fields", "id,modified"))
+	queryRow := query["items"].([]any)[0].(map[string]any)
+	if queryRow["id"] != second || queryRow["modified"] != status["modified"] {
+		t.Fatalf("query list projection: %v", queryRow)
+	}
+}

@@ -53,6 +53,7 @@ type Summary struct {
 	Tags         []string            `json:"tags,omitempty"`
 	Parent       *string             `json:"parent,omitempty"`
 	DependsOn    []string            `json:"depends_on,omitempty"`
+	Modified     *string             `json:"modified,omitempty"`
 	Path         *string             `json:"path,omitempty"`
 	Archived     bool                `json:"archived"`
 	Dependencies []DependencySummary `json:"dependencies,omitempty"`
@@ -234,7 +235,7 @@ func dependencySummaries(ticket *Ticket, byID map[string]*Ticket, view string) [
 
 func isListField(field string) bool {
 	switch field {
-	case "id", "title", "state", "priority", "assignee", "tags", "parent", "depends_on", "path", "archived":
+	case "id", "title", "state", "priority", "assignee", "tags", "parent", "depends_on", "modified", "path", "archived":
 		return true
 	}
 	return false

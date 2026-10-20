@@ -22,7 +22,7 @@ func TestJSONRequestedSkipsValuesAndQueryTails(t *testing.T) {
 		{name: "query value followed by JSON", args: []string{"create", "--title", "--query", "--json=true", "Title"}, want: true},
 		{name: "short query value followed by JSON", args: []string{"list", "--assignee", "-q", "--json=true"}, want: true},
 		{name: "unknown create actor then JSON", args: []string{"create", "--actor", "--json"}, want: true},
-		{name: "unknown create state then JSON", args: []string{"create", "--state", "--json"}, want: true},
+		{name: "create state value then JSON", args: []string{"create", "--state", "hold", "--json"}, want: true},
 		{name: "consumer JSON", args: []string{"query", "state:open", "::", "list", "--json=true"}, want: true},
 		{name: "producer JSON", args: []string{"query", "--json", "state:open", "::", "list"}, want: true},
 		{name: "direct JSON", args: []string{"create", "--json=true", "Title"}, want: true},

@@ -22,7 +22,7 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 	if err != nil {
 		return err
 	}
-	starter := domain.RenderNewForEditor(opts.Title, opts.Priority, opts.Tags, opts.Parent, opts.DependsOn, opts.Sections)
+	starter := domain.RenderNewForEditorWithInitial(opts.Title, opts.Priority, opts.Tags, opts.Parent, opts.DependsOn, opts.Sections, opts.State, opts.Assignee)
 	starterTicket, err := domain.ParseTicketFile("", starter)
 	if err != nil {
 		st.Close()
@@ -51,7 +51,7 @@ func createWithEditor(ctx *commandContext, opts domain.CreateOptions) error {
 		return preserveCreateDraftError(ctx, err, draftPath)
 	}
 	defer st.Close()
-	res, err := domain.CreateFromDraft(st, draft)
+	res, err := domain.CreateFromDraftWithExplicitState(st, draft, opts.StateExplicit)
 	if err != nil {
 		return preserveCreateDraftError(ctx, err, draftPath)
 	}

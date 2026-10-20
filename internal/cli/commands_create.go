@@ -16,6 +16,8 @@ import (
 type createInput struct {
 	Title     string            `json:"title"`
 	Priority  *int              `json:"priority"`
+	State     *string           `json:"state"`
+	Assignee  *string           `json:"assignee"`
 	Tags      []string          `json:"tags"`
 	Parent    string            `json:"parent"`
 	DependsOn []string          `json:"depends_on"`
@@ -33,6 +35,8 @@ func cmdCreate(ctx *commandContext, args []string) error {
 	var hasPriority bool
 	var tags, dependsOn []string
 	var parent string
+	var state, assignee string
+	var hasState, hasAssignee bool
 	var inputPath string
 	var objectivePath string
 	var importPath string
@@ -43,6 +47,8 @@ func cmdCreate(ctx *commandContext, args []string) error {
 	p.alias("p", "priority")
 	p.repeat("tag", &tags)
 	p.str("parent", &parent)
+	p.flag("state", kindString, func(v string) error { state, hasState = v, true; return nil }, false)
+	p.flag("assignee", kindString, func(v string) error { assignee, hasAssignee = v, true; return nil }, false)
 	p.repeat("depends-on", &dependsOn)
 	p.str("input", &inputPath)
 	p.str("objective", &objectivePath)
@@ -59,7 +65,7 @@ func cmdCreate(ctx *commandContext, args []string) error {
 		return emitHelpCommand(ctx, "create")
 	}
 	if importPath != "" {
-		if inputPath != "" || objectivePath != "" || hasTitle || len(p.positionals) > 0 || hasPriority || len(tags) > 0 || parent != "" || len(dependsOn) > 0 || edit {
+		if inputPath != "" || objectivePath != "" || hasTitle || len(p.positionals) > 0 || hasPriority || len(tags) > 0 || parent != "" || len(dependsOn) > 0 || hasState || hasAssignee || edit {
 			return contract.NewError(contract.ErrInvalidArgument,
 				"--import cannot be combined with creation options, title, Objective, structured input, or editor options.", nil)
 		}
@@ -131,7 +137,7 @@ func cmdCreate(ctx *commandContext, args []string) error {
 		return contract.NewError(contract.ErrInvalidArgument,
 			"--objective cannot be combined with --input.", nil)
 	}
-	if inputPath != "" && (objectivePath != "" || len(p.positionals) > 0 || hasTitle || hasPriority || len(tags) > 0 || parent != "" || len(dependsOn) > 0 || edit) {
+	if inputPath != "" && (objectivePath != "" || len(p.positionals) > 0 || hasTitle || hasPriority || len(tags) > 0 || parent != "" || len(dependsOn) > 0 || hasState || hasAssignee || edit) {
 		return contract.NewError(contract.ErrInvalidArgument, "Create flags cannot be combined with --input.", nil)
 	}
 	opts := domain.CreateOptions{Title: title, Priority: priority}
@@ -141,6 +147,19 @@ func cmdCreate(ctx *commandContext, args []string) error {
 	opts.Tags = tags
 	opts.Parent = parent
 	opts.DependsOn = dependsOn
+	if hasState && state == "" {
+		return contract.NewError(contract.ErrInvalidArgument, "Initial state must not be empty.", nil)
+	}
+	if hasAssignee && assignee == "" {
+		return contract.NewError(contract.ErrInvalidArgument, "Assignee must not be empty when supplied.", nil)
+	}
+	if hasState {
+		opts.State = state
+		opts.StateExplicit = true
+	}
+	if hasAssignee {
+		opts.Assignee = assignee
+	}
 	if inputPath != "" {
 		in, err := readCreateInput(ctx.input, inputPath)
 		if err != nil {
@@ -154,6 +173,19 @@ func cmdCreate(ctx *commandContext, args []string) error {
 		opts.Parent = in.Parent
 		opts.DependsOn = in.DependsOn
 		opts.Sections = in.Sections
+		if in.State != nil {
+			if *in.State == "" {
+				return contract.NewError(contract.ErrInvalidArgument, "Initial state must not be empty.", nil)
+			}
+			opts.State = *in.State
+			opts.StateExplicit = true
+		}
+		if in.Assignee != nil {
+			if *in.Assignee == "" {
+				return contract.NewError(contract.ErrInvalidArgument, "Assignee must not be empty when supplied.", nil)
+			}
+			opts.Assignee = *in.Assignee
+		}
 	} else if positionalObjective != "" {
 		extracted, objective := markdown.PrepareObjective(positionalObjective, false)
 		if opts.Title == "" {

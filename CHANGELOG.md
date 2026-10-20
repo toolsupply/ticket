@@ -2,6 +2,13 @@
 
 All notable user-facing changes to `ticket` are documented here.
 
+## [0.2.6] - 2026-10-20
+
+### Added
+
+- Added --state and --assignee options to `ticket create`
+- Added `ticket list -j --fields id,title,modified`
+
 ## [0.2.5] - 2026-10-17
 
 ### Added
@@ -157,6 +164,7 @@ All notable user-facing changes to `ticket` are documented here.
 
 - Initial release
 
+[0.2.6]: https://github.com/toolsupply/ticket/releases/tag/v0.2.6
 [0.2.5]: https://github.com/toolsupply/ticket/releases/tag/v0.2.5
 [0.2.4]: https://github.com/toolsupply/ticket/releases/tag/v0.2.4
 [0.2.3]: https://github.com/toolsupply/ticket/releases/tag/v0.2.3
